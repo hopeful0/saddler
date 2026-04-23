@@ -1,0 +1,33 @@
+# prek: https://prek.j178.dev/
+# 与 pre-commit 的 YAML 二选一即可；prek 文档推荐新仓库使用 prek.toml
+# 校验配置: prek validate-config
+# 安装 hook: prek install
+
+minimum_prek_version = "0.3.8"
+
+[default_language_version]
+python = "3.11"
+
+# 内置 hooks：单二进制、离线可用，执行路径见 https://prek.j178.dev/builtin/
+# 注意：repo = "builtin" 仅 prek 支持，上游 pre-commit 无法使用同一配置
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"] },
+  { id = "end-of-file-fixer" },
+  { id = "check-merge-conflict" },
+  { id = "detect-private-key" },
+  { id = "check-yaml" },
+  { id = "check-toml" },
+  { id = "check-json" },
+  { id = "check-added-large-files", args = ["--maxkb=1000"] },
+  { id = "check-case-conflict" },
+]
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.15.9"
+hooks = [
+  { id = "ruff-format" },
+  { id = "ruff-check" },
+]
