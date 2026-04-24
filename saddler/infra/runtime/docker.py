@@ -4,6 +4,8 @@ import subprocess
 import uuid
 from typing import Self
 
+import docker
+from docker.errors import DockerException, NotFound
 from pydantic import BaseModel, Field, JsonValue
 
 from ...runtime.backend import (
@@ -57,62 +59,77 @@ class DockerRuntimeBackend:
         return cls(spec=spec, docker_spec=DockerRuntimeSpec.from_runtime_spec(spec))
 
     def start(self) -> None:
-        if self.state.container_id:
-            self._run_docker(["start", self.state.container_id])
-            return
+        client = self._docker_client()
+        try:
+            if self.state.container_id:
+                client.containers.get(self.state.container_id).start()
+                return
 
-        container_name = (
-            self.docker_spec.container_name or f"saddler-{uuid.uuid4().hex[:12]}"
-        )
-        args = ["run", "-d", "--name", container_name]
-        if self.docker_spec.user:
-            args.extend(["--user", self.docker_spec.user])
-        for key, value in self.spec.env.items():
-            args.extend(["-e", f"{key}={value}"])
-        for mount in self.spec.mounts:
-            if mount.type != RuntimeMountType.BIND:
-                raise RuntimeError(f"Unsupported docker mount type: {mount.type}")
-            bind_mount = RuntimeHostBindMount.model_validate(mount)
-            args.extend(
-                [
-                    "-v",
-                    f"{bind_mount.source}:{bind_mount.destination}:{bind_mount.mode.value}",
-                ]
+            container_name = (
+                self.docker_spec.container_name or f"saddler-{uuid.uuid4().hex[:12]}"
             )
-        args.append(self.docker_spec.image)
-        args.extend(self.docker_spec.command)
-        container_id = self._run_docker(args).strip()
+            run_kwargs: dict[str, object] = {
+                "image": self.docker_spec.image,
+                "command": self.docker_spec.command,
+                "detach": True,
+                "name": container_name,
+            }
+            if self.docker_spec.user:
+                run_kwargs["user"] = self.docker_spec.user
+            if self.spec.env:
+                run_kwargs["environment"] = self.spec.env
 
-        self.state = DockerRuntimeState(
-            container_id=container_id,
-            container_name=container_name,
-            image=self.docker_spec.image,
-        )
+            volumes = self._build_docker_volumes()
+            if volumes:
+                run_kwargs["volumes"] = volumes
+
+            container = client.containers.run(**run_kwargs)
+            self.state = DockerRuntimeState(
+                container_id=container.id,
+                container_name=container_name,
+                image=self.docker_spec.image,
+            )
+        except DockerException as exc:
+            raise RuntimeError(f"docker lifecycle operation failed: {exc}") from exc
+        finally:
+            client.close()
 
     def is_running(self) -> bool:
         if not self.state.container_id:
             return False
-        proc = self._run_subprocess(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Running}}",
-                self.state.container_id,
-            ],
-            check=False,
-        )
-        return proc.returncode == 0 and proc.stdout.strip() == "true"
+        client = self._docker_client()
+        try:
+            container = client.containers.get(self.state.container_id)
+            container.reload()
+            return container.status == "running"
+        except NotFound:
+            return False
+        except DockerException as exc:
+            raise RuntimeError(f"docker lifecycle operation failed: {exc}") from exc
+        finally:
+            client.close()
 
     def stop(self) -> None:
         if not self.state.container_id:
             return
-        self._run_docker(["stop", "--time", "10", self.state.container_id])
+        client = self._docker_client()
+        try:
+            client.containers.get(self.state.container_id).stop(timeout=10)
+        except DockerException as exc:
+            raise RuntimeError(f"docker lifecycle operation failed: {exc}") from exc
+        finally:
+            client.close()
 
     def remove(self) -> None:
         if not self.state.container_id:
             return
-        self._run_docker(["rm", "-f", self.state.container_id])
+        client = self._docker_client()
+        try:
+            client.containers.get(self.state.container_id).remove(force=True)
+        except DockerException as exc:
+            raise RuntimeError(f"docker lifecycle operation failed: {exc}") from exc
+        finally:
+            client.close()
         self.state = DockerRuntimeState(
             container_name=self.state.container_name,
             image=self.state.image,
@@ -219,6 +236,22 @@ class DockerRuntimeBackend:
     def _run_docker(self, args: list[str]) -> str:
         proc = self._run_subprocess(["docker", *args], check=True)
         return proc.stdout
+
+    @staticmethod
+    def _docker_client() -> docker.DockerClient:
+        return docker.from_env()
+
+    def _build_docker_volumes(self) -> dict[str, dict[str, str]]:
+        volumes: dict[str, dict[str, str]] = {}
+        for mount in self.spec.mounts:
+            if mount.type != RuntimeMountType.BIND:
+                raise RuntimeError(f"Unsupported docker mount type: {mount.type}")
+            bind_mount = RuntimeHostBindMount.model_validate(mount)
+            volumes[str(bind_mount.source)] = {
+                "bind": str(bind_mount.destination),
+                "mode": bind_mount.mode.value,
+            }
+        return volumes
 
     @staticmethod
     def _run_subprocess(
