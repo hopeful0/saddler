@@ -11,7 +11,7 @@ from saddler.infra.harness.cursor import (
     CursorHarness,
     _ensure_rule_frontmatter,
 )
-from saddler.runtime.backend import ExecResult, RuntimeBackend
+from saddler.runtime.backend import Command, ExecResult, RuntimeBackend
 
 # Ensure infra fetchers are registered.
 from saddler import infra as _infra  # noqa: F401
@@ -59,8 +59,10 @@ class FakeRuntimeBackend(RuntimeBackend):
     def is_running(self) -> bool:
         return True
 
-    def _rewrite_sh_script(self, command: list[str]) -> list[str]:
+    def _rewrite_sh_script(self, command: Command) -> list[str]:
         """Map `/workspace` in `sh -lc` scripts to the host workspace directory."""
+        if isinstance(command, str):
+            return ["sh", "-lc", command.replace("/workspace", str(self._workspace))]
         if len(command) >= 3 and command[0] == "sh" and command[1] == "-lc":
             script = command[2].replace("/workspace", str(self._workspace))
             return ["sh", "-lc", script]
@@ -68,7 +70,7 @@ class FakeRuntimeBackend(RuntimeBackend):
 
     def exec(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
@@ -88,7 +90,7 @@ class FakeRuntimeBackend(RuntimeBackend):
 
     def exec_bg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
@@ -96,7 +98,7 @@ class FakeRuntimeBackend(RuntimeBackend):
 
     def exec_fg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:

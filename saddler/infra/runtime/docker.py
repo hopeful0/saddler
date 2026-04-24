@@ -6,7 +6,12 @@ from typing import Self
 
 from pydantic import BaseModel, Field, JsonValue
 
-from ...runtime.backend import ExecResult, register_runtime_backend
+from ...runtime.backend import (
+    Command,
+    ExecResult,
+    normalize_shell_command,
+    register_runtime_backend,
+)
 from ...runtime.model import RuntimeHostBindMount, RuntimeMountType, RuntimeSpec
 
 
@@ -115,17 +120,17 @@ class DockerRuntimeBackend:
 
     def exec(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> ExecResult:
         cid = self._require_container_id()
+        cmd_str = normalize_shell_command(command)
         args = ["exec", "-w", cwd]
         for key, value in (env or {}).items():
             args.extend(["-e", f"{key}={value}"])
-        args.append(cid)
-        args.extend(command)
+        args.extend([cid, "sh", "-lc", cmd_str])
         proc = self._run_subprocess(["docker", *args], timeout=timeout, check=False)
         return ExecResult(
             exit_code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr
@@ -133,34 +138,35 @@ class DockerRuntimeBackend:
 
     def exec_bg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
         cid = self._require_container_id()
+        cmd_str = normalize_shell_command(command)
         args = ["exec", "-d", "-w", cwd]
         for key, value in (env or {}).items():
             args.extend(["-e", f"{key}={value}"])
-        args.append(cid)
-        args.extend(command)
+        args.extend([cid, "sh", "-lc", cmd_str])
         self._run_docker(args)
 
     def exec_fg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
         import sys
 
         cid = self._require_container_id()
+        cmd_str = normalize_shell_command(command)
         args = ["exec", "-i"]
         if sys.stdin.isatty():
             args.append("-t")
         args.extend(["-w", cwd])
         for key, value in (env or {}).items():
             args.extend(["-e", f"{key}={value}"])
-        args.extend([cid, *command])
+        args.extend([cid, "sh", "-lc", cmd_str])
         proc = subprocess.run(["docker", *args], check=False)
         if proc.returncode != 0:
             raise RuntimeError(f"docker exec failed with exit code {proc.returncode}")
