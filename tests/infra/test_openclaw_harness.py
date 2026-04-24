@@ -6,7 +6,7 @@ import pytest
 
 from saddler.agent.model import AgentSpec
 from saddler.infra.harness.openclaw import OpenClawHarness
-from saddler.runtime.backend import ExecResult
+from saddler.runtime.backend import Command, ExecResult
 
 
 @dataclass
@@ -17,7 +17,7 @@ class _FakeRuntime:
         self.status_calls = 0
         self.started_gateway = False
 
-    def exec(self, command: list[str], cwd: str, env=None, timeout=None) -> ExecResult:  # noqa: ANN001
+    def exec(self, command: Command, cwd: str, env=None, timeout=None) -> ExecResult:  # noqa: ANN001
         if command == ["openclaw", "gateway", "status", "--require-rpc"]:
             self.status_calls += 1
             if self.status_calls <= self.status_failures_before_ready:
@@ -25,7 +25,7 @@ class _FakeRuntime:
             return ExecResult(exit_code=0, stdout="ok", stderr="")
         return ExecResult(exit_code=0, stdout="", stderr="")
 
-    def exec_bg(self, command: list[str], cwd: str, env=None) -> None:  # noqa: ANN001
+    def exec_bg(self, command: Command, cwd: str, env=None) -> None:  # noqa: ANN001
         if command == ["openclaw", "gateway", "--allow-unconfigured"]:
             self.started_gateway = True
 

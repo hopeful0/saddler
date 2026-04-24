@@ -8,7 +8,12 @@ from typing import Self
 
 from pydantic import JsonValue
 
-from ...runtime.backend import ExecResult, register_runtime_backend
+from ...runtime.backend import (
+    Command,
+    ExecResult,
+    normalize_shell_command,
+    register_runtime_backend,
+)
 from ...runtime.model import RuntimeSpec
 
 
@@ -35,14 +40,15 @@ class LocalRuntimeBackend:
 
     def exec(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> ExecResult:
+        cmd_str = normalize_shell_command(command)
         merged_env = {**os.environ, **self.spec.env, **(env or {})}
         proc = subprocess.run(
-            command,
+            ["sh", "-lc", cmd_str],
             cwd=cwd,
             env=merged_env,
             text=True,
@@ -58,13 +64,14 @@ class LocalRuntimeBackend:
 
     def exec_bg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
+        cmd_str = normalize_shell_command(command)
         merged_env = {**os.environ, **self.spec.env, **(env or {})}
         subprocess.Popen(
-            command,
+            ["sh", "-lc", cmd_str],
             cwd=cwd,
             env=merged_env,
             stdout=subprocess.DEVNULL,
@@ -74,12 +81,18 @@ class LocalRuntimeBackend:
 
     def exec_fg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
+        cmd_str = normalize_shell_command(command)
         merged_env = {**os.environ, **self.spec.env, **(env or {})}
-        proc = subprocess.run(command, cwd=cwd, env=merged_env, check=False)
+        proc = subprocess.run(
+            ["sh", "-lc", cmd_str],
+            cwd=cwd,
+            env=merged_env,
+            check=False,
+        )
         if proc.returncode != 0:
             raise RuntimeError(f"local exec failed with exit code {proc.returncode}")
 

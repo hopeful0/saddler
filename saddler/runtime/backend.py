@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from typing import Protocol, Self
 
@@ -8,6 +9,23 @@ from pydantic import JsonValue
 from .model import RuntimeSpec
 
 from ..shared.registry import Registry
+
+Command = str | list[str]
+
+
+def normalize_shell_command(command: Command) -> str:
+    if isinstance(command, str):
+        if not command.strip():
+            raise ValueError("command must not be empty")
+        return command
+
+    if not command:
+        raise ValueError("command must not be empty")
+
+    if not all(isinstance(item, str) for item in command):
+        raise TypeError("command list items must be str")
+
+    return shlex.join(command)
 
 
 @dataclass(frozen=True)
@@ -36,29 +54,44 @@ class RuntimeBackend(Protocol):
 
     def exec(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> ExecResult:
-        """Run a command and capture its stdout/stderr; never raises on non-zero exit."""
+        """Run a shell command and capture stdout/stderr; never raises on non-zero exit.
+
+        command accepts str | list[str]. list[str] is normalized via shlex.join
+        into a shell command string before execution, and execution follows shell
+        semantics.
+        """
 
     def exec_bg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
-        """Launch a command detached (fire-and-forget); output is discarded."""
+        """Launch a shell command detached (fire-and-forget); output is discarded.
+
+        command accepts str | list[str]. list[str] is normalized via shlex.join
+        into a shell command string before execution, and execution follows shell
+        semantics.
+        """
         ...
 
     def exec_fg(
         self,
-        command: list[str],
+        command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
-        """Run a command with stdin/stdout/stderr attached to the terminal; raises on non-zero exit."""
+        """Run a shell command attached to terminal IO; raises on non-zero exit.
+
+        command accepts str | list[str]. list[str] is normalized via shlex.join
+        into a shell command string before execution, and execution follows shell
+        semantics.
+        """
 
     def copy_to(self, src_host: str, dest_runtime: str) -> None:
         """Copy a file or directory from the host filesystem into the runtime."""

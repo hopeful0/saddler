@@ -7,10 +7,10 @@ from pathlib import Path
 from ...agent.model import RuleSpec, SkillSpec
 from ...resource import parse_source
 from ...resource.model import SourceSpec
-from ...runtime.backend import RuntimeBackend
+from ...runtime.backend import Command, RuntimeBackend
 
 
-def require_ok_exec(runtime: RuntimeBackend, command: list[str], cwd: str) -> None:
+def require_ok_exec(runtime: RuntimeBackend, command: Command, cwd: str) -> None:
     result = runtime.exec(command, cwd)
     if result.exit_code != 0:
         raise RuntimeError(
