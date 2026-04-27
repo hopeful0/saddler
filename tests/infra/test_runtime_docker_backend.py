@@ -466,13 +466,13 @@ def test_signal_methods_issue_kill_exec_calls() -> None:
 
     proc.terminate()
     proc.kill()
-    kill_cmds = [
+    signal_cmds = [
         call.get("cmd")
         for call in api.exec_create_calls
-        if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "kill"
+        if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "sh"
     ]
-    assert ["kill", "-TERM", "123"] in kill_cmds
-    assert ["kill", "-KILL", "123"] in kill_cmds
+    assert ["sh", "-lc", "kill -TERM -123"] in signal_cmds
+    assert ["sh", "-lc", "kill -KILL -123"] in signal_cmds
 
 
 def test_communicate_supports_stderr_stdout_merge() -> None:
@@ -550,13 +550,13 @@ def test_docker_subprocess_run_timeout_cleans_up_process() -> None:
     with pytest.raises(subprocess.TimeoutExpired):
         subproc.run("sleep 10", cwd="/workspace", timeout=0.01)
 
-    kill_cmds = [
+    signal_cmds = [
         call.get("cmd")
         for call in api.exec_create_calls
-        if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "kill"
+        if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "sh"
     ]
-    assert ["kill", "-TERM", "123"] in kill_cmds
-    assert ["kill", "-KILL", "123"] in kill_cmds
+    assert ["sh", "-lc", "kill -TERM -123"] in signal_cmds
+    assert ["sh", "-lc", "kill -KILL -123"] in signal_cmds
 
 
 def test_exec_non_zero_returns_result_instead_of_raising(

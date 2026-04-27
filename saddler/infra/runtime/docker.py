@@ -347,7 +347,7 @@ class DockerPopen:
         try:
             payload = self._api.exec_create(
                 container=self._container_id,
-                cmd=["kill", f"-{sig}", str(self.pid)],
+                cmd=["sh", "-lc", f"kill -{sig} -{self.pid}"],
                 tty=False,
                 stdin=False,
             )
