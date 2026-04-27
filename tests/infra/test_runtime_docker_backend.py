@@ -471,8 +471,40 @@ def test_signal_methods_issue_kill_exec_calls() -> None:
         for call in api.exec_create_calls
         if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "sh"
     ]
-    assert ["sh", "-lc", "kill -TERM -123"] in signal_cmds
-    assert ["sh", "-lc", "kill -KILL -123"] in signal_cmds
+    assert [
+        "sh",
+        "-lc",
+        "kill -TERM -123 2>/dev/null || kill -TERM 123",
+    ] in signal_cmds
+    assert [
+        "sh",
+        "-lc",
+        "kill -KILL -123 2>/dev/null || kill -KILL 123",
+    ] in signal_cmds
+
+
+def test_send_signal_rejects_unsupported_signal() -> None:
+    api = FakeExecApi([_mux_frame(1, b"123\n")], inspect_sequence=[0])
+    proc = DockerSubprocess(api=api, container_id="cid-123").Popen(
+        "echo hi",
+        cwd="/workspace",
+        env=None,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    with pytest.raises(ValueError, match="unsupported signal"):
+        proc.send_signal("USR1")
+    kill_cmds = [
+        call.get("cmd")
+        for call in api.exec_create_calls
+        if isinstance(call.get("cmd"), list)
+        and call.get("cmd", [None])[0] == "sh"
+        and len(call.get("cmd", [])) >= 3
+        and "kill " in str(call.get("cmd", ["", "", ""])[2])
+    ]
+    assert kill_cmds == []
 
 
 def test_communicate_supports_stderr_stdout_merge() -> None:
@@ -555,8 +587,16 @@ def test_docker_subprocess_run_timeout_cleans_up_process() -> None:
         for call in api.exec_create_calls
         if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "sh"
     ]
-    assert ["sh", "-lc", "kill -TERM -123"] in signal_cmds
-    assert ["sh", "-lc", "kill -KILL -123"] in signal_cmds
+    assert [
+        "sh",
+        "-lc",
+        "kill -TERM -123 2>/dev/null || kill -TERM 123",
+    ] in signal_cmds
+    assert [
+        "sh",
+        "-lc",
+        "kill -KILL -123 2>/dev/null || kill -KILL 123",
+    ] in signal_cmds
 
 
 def test_exec_non_zero_returns_result_instead_of_raising(

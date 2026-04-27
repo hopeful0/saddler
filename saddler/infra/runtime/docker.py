@@ -60,6 +60,8 @@ StdioValue: TypeAlias = int | IO[Any] | None
 
 
 class DockerPopen:
+    _ALLOWED_SIGNALS = frozenset({"TERM", "KILL", "INT", "HUP", "QUIT"})
+
     def __init__(
         self,
         *,
@@ -334,7 +336,8 @@ class DockerPopen:
             sig_name = signal.Signals(sig).name
             sig_name = sig_name.removeprefix("SIG")
         else:
-            sig_name = sig.removeprefix("SIG")
+            sig_name = sig.removeprefix("SIG").upper()
+        sig_name = self._normalize_signal_name(sig_name)
         self._signal_process(sig_name)
 
     def terminate(self) -> None:
@@ -347,7 +350,11 @@ class DockerPopen:
         try:
             payload = self._api.exec_create(
                 container=self._container_id,
-                cmd=["sh", "-lc", f"kill -{sig} -{self.pid}"],
+                cmd=[
+                    "sh",
+                    "-lc",
+                    (f"kill -{sig} -{self.pid} 2>/dev/null || kill -{sig} {self.pid}"),
+                ],
                 tty=False,
                 stdin=False,
             )
@@ -355,6 +362,12 @@ class DockerPopen:
         except Exception:
             # Timeout should still surface even if kill best-effort fails.
             return
+
+    @classmethod
+    def _normalize_signal_name(cls, sig_name: str) -> str:
+        if sig_name not in cls._ALLOWED_SIGNALS:
+            raise ValueError(f"unsupported signal: {sig_name}")
+        return sig_name
 
     def _close_stdin(self) -> None:
         if self._stdin_closed:
