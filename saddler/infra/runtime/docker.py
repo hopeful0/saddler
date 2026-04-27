@@ -6,6 +6,8 @@ import select
 import shlex
 import shutil
 import signal
+import socket
+import subprocess
 import sys
 import tarfile
 import termios
@@ -67,6 +69,7 @@ class DockerPopen:
         demux_capture: bool = False,
         initial_stdout: list[bytes] | None = None,
         initial_stderr: list[bytes] | None = None,
+        args: Command | None = None,
     ) -> None:
         self._api = api
         self._exec_id = exec_id
@@ -76,10 +79,22 @@ class DockerPopen:
         self._demux_capture = demux_capture
         self._initial_stdout = initial_stdout or []
         self._initial_stderr = initial_stderr or []
+        self.args = args
         self.pid = pid
+        self.returncode: int | None = None
 
-    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+    def communicate(
+        self, input: str | bytes | None = None, timeout: float | None = None
+    ) -> tuple[str, str]:
         deadline = None if timeout is None else time.monotonic() + timeout
+        if input is not None and self._socket is not None:
+            if isinstance(input, str):
+                payload = input.encode()
+            else:
+                payload = input
+            if payload:
+                _socket_send(self._socket, payload)
+            self._close_stdin()
         if self._demux_capture:
             if self._socket is None:
                 raise RuntimeError("docker exec socket is not available for capture")
@@ -88,8 +103,7 @@ class DockerPopen:
             socket_open = True
             while True:
                 if deadline is not None and time.monotonic() >= deadline:
-                    self._terminate_on_timeout()
-                    raise TimeoutError("docker exec timed out")
+                    raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
                 if socket_open:
                     if hasattr(self._socket, "fileno"):
                         wait_s = _remaining_timeout(deadline, cap=0.05)
@@ -127,8 +141,7 @@ class DockerPopen:
         chunks: list[bytes] = []
         for chunk in self._stream:
             if deadline is not None and time.monotonic() >= deadline:
-                self._terminate_on_timeout()
-                raise TimeoutError("docker exec timed out")
+                raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
             if not chunk:
                 continue
             chunks.append(chunk if isinstance(chunk, bytes) else bytes(chunk))
@@ -209,7 +222,8 @@ class DockerPopen:
     def poll(self) -> int | None:
         details = self._api.exec_inspect(self._exec_id)
         exit_code = details.get("ExitCode")
-        return None if exit_code is None else int(exit_code)
+        self.returncode = None if exit_code is None else int(exit_code)
+        return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -217,18 +231,25 @@ class DockerPopen:
             details = self._api.exec_inspect(self._exec_id)
             exit_code = details.get("ExitCode")
             if exit_code is not None:
-                return int(exit_code)
+                self.returncode = int(exit_code)
+                return self.returncode
             if deadline is not None and time.monotonic() >= deadline:
-                self._terminate_on_timeout()
-                raise TimeoutError("docker exec timed out")
+                raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
             time.sleep(0.02)
 
-    def _terminate_on_timeout(self) -> None:
-        # Best-effort termination on timeout: TERM then KILL fallback.
-        self._signal_process("TERM")
-        time.sleep(0.05)
-        if self.poll() is None:
-            self._signal_process("KILL")
+    def send_signal(self, sig: int | str) -> None:
+        if isinstance(sig, int):
+            sig_name = signal.Signals(sig).name
+            sig_name = sig_name.removeprefix("SIG")
+        else:
+            sig_name = sig.removeprefix("SIG")
+        self._signal_process(sig_name)
+
+    def terminate(self) -> None:
+        self.send_signal("TERM")
+
+    def kill(self) -> None:
+        self.send_signal("KILL")
 
     def _signal_process(self, sig: str) -> None:
         try:
@@ -241,6 +262,15 @@ class DockerPopen:
             self._api.exec_start(payload["Id"], stream=False, demux=False, tty=False)
         except Exception:
             # Timeout should still surface even if kill best-effort fails.
+            return
+
+    def _close_stdin(self) -> None:
+        if self._socket is None:
+            return
+        try:
+            if hasattr(self._socket, "shutdown"):
+                self._socket.shutdown(socket.SHUT_WR)  # type: ignore[attr-defined]
+        except Exception:
             return
 
     @staticmethod
@@ -268,7 +298,7 @@ class DockerPopen:
             workdir=cwd,
             environment=env or None,
             tty=(mode == "fg"),
-            stdin=(mode == "fg"),
+            stdin=(mode in {"fg", "capture"}),
         )
         exec_id = payload["Id"]
         if mode == "fg":
@@ -285,6 +315,7 @@ class DockerPopen:
                 stream=full_stream,
                 pid=pid,
                 socket=io_socket,
+                args=command,
             )
         if mode == "capture":
             raw_sock = api.exec_start(exec_id, socket=True, tty=False)
@@ -303,6 +334,7 @@ class DockerPopen:
                 demux_capture=True,
                 initial_stdout=initial_stdout,
                 initial_stderr=initial_stderr,
+                args=command,
             )
         raw_stream = api.exec_start(exec_id, stream=True, demux=False, tty=False)
         stream_iter = iter(raw_stream)
@@ -317,7 +349,72 @@ class DockerPopen:
             stream=full_stream,
             pid=pid,
             socket=io_socket,
+            args=command,
         )
+
+
+class DockerSubprocess:
+    """A lightweight subprocess-like facade on top of Docker exec."""
+
+    def __init__(self, *, api: APIClient, container_id: str) -> None:
+        self._api = api
+        self._container_id = container_id
+
+    def Popen(
+        self,
+        command: Command,
+        *,
+        cwd: str,
+        env: dict[str, str] | None = None,
+        mode: str = "capture",
+    ) -> DockerPopen:
+        return DockerPopen.spawn(
+            api=self._api,
+            container_id=self._container_id,
+            command=command,
+            cwd=cwd,
+            env=env,
+            mode=mode,
+        )
+
+    def run(
+        self,
+        command: Command,
+        *,
+        cwd: str,
+        env: dict[str, str] | None = None,
+        input: str | bytes | None = None,
+        timeout: float | None = None,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        proc = self.Popen(command, cwd=cwd, env=env, mode="capture")
+        try:
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
+            returncode = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._cleanup_timed_out_process(proc)
+            raise
+        completed = subprocess.CompletedProcess(
+            args=command,
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        if check and returncode != 0:
+            raise subprocess.CalledProcessError(
+                returncode,
+                command,
+                output=stdout,
+                stderr=stderr,
+            )
+        return completed
+
+    @staticmethod
+    def _cleanup_timed_out_process(proc: DockerPopen) -> None:
+        proc.terminate()
+        time.sleep(0.05)
+        if proc.poll() is None:
+            proc.kill()
 
 
 def _read_pid_and_buffer(
@@ -596,15 +693,17 @@ class DockerRuntimeBackend:
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> ExecResult:
-        proc = self._spawn_docker_popen(
-            command=command, cwd=cwd, env=env, mode="capture"
+        completed = self._docker_subprocess().run(
+            command=command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            check=False,
         )
-        stdout, stderr = proc.communicate(timeout=timeout)
-        exit_code = proc.wait(timeout=timeout)
         return ExecResult(
-            exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
         )
 
     def exec_bg(
@@ -695,13 +794,12 @@ class DockerRuntimeBackend:
         env: dict[str, str] | None,
         mode: str,
     ) -> DockerPopen:
-        cid = self._require_container_id()
-        api = self._client().api
-        return DockerPopen.spawn(
-            api=api,
-            container_id=cid,
-            command=command,
-            cwd=cwd,
-            env=env,
-            mode=mode,
+        return self._docker_subprocess().Popen(
+            command=command, cwd=cwd, env=env, mode=mode
+        )
+
+    def _docker_subprocess(self) -> DockerSubprocess:
+        return DockerSubprocess(
+            api=self._client().api,
+            container_id=self._require_container_id(),
         )

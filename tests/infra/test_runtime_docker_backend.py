@@ -1,16 +1,19 @@
-from types import SimpleNamespace
 import io
+import subprocess
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 from docker.errors import NotFound
 
 from saddler.infra.runtime.docker import (
     DockerPopen,
+    DockerSubprocess,
     DockerRuntimeBackend,
     DockerRuntimeSpec,
     DockerRuntimeState,
 )
+from saddler.runtime.backend import Command
 from saddler.runtime.model import RuntimeSpec
 
 
@@ -219,6 +222,8 @@ def _mux_frame(stream_type: int, payload: bytes) -> bytes:
 class FakeSocket:
     def __init__(self, chunks: list[bytes]) -> None:
         self._buf = b"".join(chunks)
+        self.sent: list[bytes] = []
+        self.shutdown_called = False
 
     def recv(self, size: int) -> bytes:
         if not self._buf:
@@ -227,25 +232,43 @@ class FakeSocket:
         self._buf = self._buf[size:]
         return chunk
 
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def shutdown(self, _how: int) -> None:
+        self.shutdown_called = True
+
 
 def test_exec_exec_bg_exec_fg_all_use_spawn_docker_popen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _make_backend()
-    calls: list[dict[str, object]] = []
+    popen_calls: list[dict[str, object]] = []
+    run_calls: list[dict[str, object]] = []
 
-    def fake_spawn_docker_popen(**kwargs: object) -> FakeDockerPopen:
-        calls.append(kwargs)
-        return FakeDockerPopen(stdout="ok")
+    class FakeSubprocess:
+        def run(
+            self, command: Command, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            run_calls.append({"command": command, **kwargs})
+            return subprocess.CompletedProcess(command, 0, "ok", "")
 
-    monkeypatch.setattr(backend, "_spawn_docker_popen", fake_spawn_docker_popen)
+        def Popen(self, command: Command, **kwargs: object) -> FakeDockerPopen:
+            popen_calls.append({"command": command, **kwargs})
+            return FakeDockerPopen(stdout="ok")
+
+    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
 
     backend.exec("echo ok", cwd="/w")
     backend.exec_bg("echo ok", cwd="/w")
     backend.exec_fg("echo ok", cwd="/w")
 
-    assert len(calls) == 3
-    assert [call["mode"] for call in calls] == ["capture", "bg", "fg"]
+    assert len(run_calls) == 1
+    assert run_calls[0]["command"] == "echo ok"
+    assert run_calls[0]["cwd"] == "/w"
+    assert run_calls[0]["check"] is False
+    assert len(popen_calls) == 2
+    assert [call["mode"] for call in popen_calls] == ["bg", "fg"]
 
 
 class FakeExecApi:
@@ -256,6 +279,7 @@ class FakeExecApi:
     ) -> None:
         self.stream_chunks = stream_chunks
         self.exec_create_calls: list[dict[str, object]] = []
+        self.last_socket: FakeSocket | None = None
         self.inspect_sequence = inspect_sequence or [0]
         self._inspect_idx = 0
 
@@ -266,7 +290,9 @@ class FakeExecApi:
     def exec_start(self, exec_id: str, **kwargs: object) -> list[bytes]:
         _ = exec_id
         if kwargs.get("socket"):
-            return FakeSocket(self.stream_chunks)  # type: ignore[return-value]
+            sock = FakeSocket(self.stream_chunks)
+            self.last_socket = sock
+            return sock  # type: ignore[return-value]
         return self.stream_chunks
 
     def exec_inspect(self, exec_id: str) -> dict[str, int]:
@@ -343,26 +369,106 @@ def test_communicate_timeout_raises() -> None:
         mode="capture",
     )
 
-    with pytest.raises(TimeoutError, match="timed out"):
+    with pytest.raises(subprocess.TimeoutExpired):
         proc.communicate(timeout=0.01)
+
+
+def test_communicate_accepts_input_and_closes_stdin() -> None:
+    api = FakeExecApi(
+        [
+            _mux_frame(1, b"123\n"),
+            _mux_frame(1, b"out"),
+        ],
+        inspect_sequence=[None, 0],
+    )
+    proc = DockerPopen.spawn(
+        api=api,
+        container_id="cid-123",
+        command="cat",
+        cwd="/workspace",
+        env=None,
+        mode="capture",
+    )
+
+    stdout, stderr = proc.communicate(input="hello", timeout=1)
+    assert stdout == "out"
+    assert stderr == ""
+    assert api.last_socket is not None
+    assert api.last_socket.sent == [b"hello"]
+    assert api.last_socket.shutdown_called is True
+
+
+def test_signal_methods_issue_kill_exec_calls() -> None:
+    api = FakeExecApi([_mux_frame(1, b"123\n")], inspect_sequence=[0])
+    proc = DockerPopen.spawn(
+        api=api,
+        container_id="cid-123",
+        command="echo hi",
+        cwd="/workspace",
+        env=None,
+        mode="capture",
+    )
+
+    proc.terminate()
+    proc.kill()
+    kill_cmds = [
+        call.get("cmd")
+        for call in api.exec_create_calls
+        if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "kill"
+    ]
+    assert ["kill", "-TERM", "123"] in kill_cmds
+    assert ["kill", "-KILL", "123"] in kill_cmds
+
+
+def test_docker_subprocess_run_check_raises_calledprocesserror() -> None:
+    api = FakeExecApi(
+        [
+            _mux_frame(1, b"123\n"),
+            _mux_frame(2, b"boom"),
+        ],
+        inspect_sequence=[None, 7],
+    )
+    subproc = DockerSubprocess(api=api, container_id="cid-123")
+
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        subproc.run("exit 7", cwd="/workspace", check=True)
+    assert exc.value.returncode == 7
+
+
+def test_docker_subprocess_run_timeout_cleans_up_process() -> None:
+    api = FakeExecApi(
+        [_mux_frame(1, b"123\n")],
+        inspect_sequence=[None, None, None, None],
+    )
+    subproc = DockerSubprocess(api=api, container_id="cid-123")
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        subproc.run("sleep 10", cwd="/workspace", timeout=0.01)
 
     kill_cmds = [
         call.get("cmd")
         for call in api.exec_create_calls
         if isinstance(call.get("cmd"), list) and call.get("cmd", [None])[0] == "kill"
     ]
-    assert kill_cmds
+    assert ["kill", "-TERM", "123"] in kill_cmds
+    assert ["kill", "-KILL", "123"] in kill_cmds
 
 
 def test_exec_non_zero_returns_result_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _make_backend()
-    monkeypatch.setattr(
-        backend,
-        "_spawn_docker_popen",
-        lambda **_: FakeDockerPopen(exit_code=7, stdout="", stderr="boom"),
-    )
+
+    class FakeSubprocess:
+        def run(
+            self, command: Command, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 7, "", "boom")
+
+        def Popen(self, command: Command, **kwargs: object) -> FakeDockerPopen:
+            return FakeDockerPopen()
+
+    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
 
     result = backend.exec("exit 7", cwd="/workspace")
 
