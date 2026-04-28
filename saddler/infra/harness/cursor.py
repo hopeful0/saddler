@@ -76,16 +76,17 @@ class CursorHarness(Harness):
         return result.exit_code == 0
 
     def install(self, runtime: RuntimeBackend) -> None:
-        # First phase keeps install as no-op. Runtime image should provide the binary.
-        raise NotImplementedError(
-            "Cursor harness installation is not supported in the first phase"
+        require_ok_exec(
+            runtime,
+            "curl https://cursor.com/install -fsS | bash",
+            self.spec.workdir,
         )
 
     def install_rules(self, runtime: RuntimeBackend, rules: list[RuleSpec]) -> None:
         cfg = _cursor_config_dir(self.spec.workdir)
         require_ok_exec(
             runtime,
-            ["sh", "-lc", f"mkdir -p {cfg}/rules"],
+            f"mkdir -p {cfg}/rules",
             self.spec.workdir,
         )
         for rule in rules:
@@ -98,7 +99,7 @@ class CursorHarness(Harness):
         cfg = _cursor_config_dir(self.spec.workdir)
         require_ok_exec(
             runtime,
-            ["sh", "-lc", f"mkdir -p {cfg}/skills"],
+            f"mkdir -p {cfg}/skills",
             self.spec.workdir,
         )
         for skill in skills:
@@ -109,7 +110,7 @@ class CursorHarness(Harness):
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _cursor_config_dir(self.spec.workdir)
         result = runtime.exec(
-            command=["sh", "-lc", f"ls -1 {cfg}/skills 2>/dev/null || true"],
+            command=f"ls -1 {cfg}/skills 2>/dev/null || true",
             cwd=self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]
@@ -117,7 +118,7 @@ class CursorHarness(Harness):
     def list_rules(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _cursor_config_dir(self.spec.workdir)
         result = runtime.exec(
-            command=["sh", "-lc", f"ls -1 {cfg}/rules 2>/dev/null || true"],
+            command=f"ls -1 {cfg}/rules 2>/dev/null || true",
             cwd=self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]

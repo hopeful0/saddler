@@ -52,7 +52,7 @@ class OpenClawHarness(Harness):
     def install(self, runtime: RuntimeBackend) -> None:
         require_ok_exec(
             runtime,
-            ["npm", "install", "-g", "openclaw"],
+            "npm install -g openclaw",
             self.spec.workdir,
         )
 
@@ -68,9 +68,7 @@ class OpenClawHarness(Harness):
 
     def install_skills(self, runtime: RuntimeBackend, skills: list[SkillSpec]) -> None:
         skills_dir = str(PurePosixPath(self.spec.workdir) / "skills")
-        require_ok_exec(
-            runtime, ["sh", "-lc", f"mkdir -p {skills_dir}"], self.spec.workdir
-        )
+        require_ok_exec(runtime, f"mkdir -p {skills_dir}", self.spec.workdir)
         for skill in skills:
             fetch_and_copy_skill_dir(
                 runtime, skill, f"{skills_dir}/{skill.name}", self.spec.workdir
@@ -84,7 +82,7 @@ class OpenClawHarness(Harness):
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         skills_dir = str(PurePosixPath(self.spec.workdir) / "skills")
         result = runtime.exec(
-            ["sh", "-lc", f"ls -1 {skills_dir} 2>/dev/null || true"],
+            f"ls -1 {skills_dir} 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]

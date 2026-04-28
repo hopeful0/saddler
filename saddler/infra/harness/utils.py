@@ -115,5 +115,5 @@ def fetch_and_copy_skill_dir(
             skill_root = (
                 resource_path if resource_path.is_dir() else resource_path.parent
             )
-            require_ok_exec(runtime, ["sh", "-lc", f"rm -rf {dest_dir}"], cwd)
+            require_ok_exec(runtime, f"rm -rf {dest_dir}", cwd)
             runtime.copy_to(str(skill_root), dest_dir)

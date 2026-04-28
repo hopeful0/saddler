@@ -51,9 +51,7 @@ class OpenCodeHarness(Harness):
         return result.exit_code == 0
 
     def install(self, runtime: RuntimeBackend) -> None:
-        raise require_ok_exec(
-            runtime, ["npm", "install", "-g", "opencode-ai"], self.spec.workdir
-        )
+        require_ok_exec(runtime, "npm install -g opencode-ai", self.spec.workdir)
 
     def install_rules(self, runtime: RuntimeBackend, rules: list[RuleSpec]) -> None:
         for rule in rules:
@@ -68,9 +66,7 @@ class OpenCodeHarness(Harness):
     def install_skills(self, runtime: RuntimeBackend, skills: list[SkillSpec]) -> None:
         cfg = _opencode_config_dir(self.spec.workdir)
         skills_dir = f"{cfg}/skills"
-        require_ok_exec(
-            runtime, ["sh", "-lc", f"mkdir -p {skills_dir}"], self.spec.workdir
-        )
+        require_ok_exec(runtime, f"mkdir -p {skills_dir}", self.spec.workdir)
         for skill in skills:
             fetch_and_copy_skill_dir(
                 runtime, skill, f"{skills_dir}/{skill.name}", self.spec.workdir
@@ -84,7 +80,7 @@ class OpenCodeHarness(Harness):
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _opencode_config_dir(self.spec.workdir)
         result = runtime.exec(
-            ["sh", "-lc", f"ls -1 {cfg}/skills 2>/dev/null || true"],
+            f"ls -1 {cfg}/skills 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]
@@ -93,4 +89,4 @@ class OpenCodeHarness(Harness):
         runtime.exec_fg([self.config.binary], cwd=self.spec.workdir)
 
     def acp(self, runtime: RuntimeBackend) -> None:
-        raise NotImplementedError("OpenCode does not have a built-in acp command")
+        runtime.exec_fg(f"{self.config.binary} acp", cwd=self.spec.workdir)

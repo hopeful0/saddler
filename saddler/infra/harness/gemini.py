@@ -53,7 +53,7 @@ class GeminiHarness(Harness):
     def install(self, runtime: RuntimeBackend) -> None:
         require_ok_exec(
             runtime,
-            ["npm", "install", "-g", "@google/gemini-cli"],
+            "npm install -g @google/gemini-cli",
             self.spec.workdir,
         )
 
@@ -70,9 +70,7 @@ class GeminiHarness(Harness):
     def install_skills(self, runtime: RuntimeBackend, skills: list[SkillSpec]) -> None:
         cfg = _gemini_config_dir(self.spec.workdir)
         skills_dir = f"{cfg}/skills"
-        require_ok_exec(
-            runtime, ["sh", "-lc", f"mkdir -p {skills_dir}"], self.spec.workdir
-        )
+        require_ok_exec(runtime, f"mkdir -p {skills_dir}", self.spec.workdir)
         for skill in skills:
             fetch_and_copy_skill_dir(
                 runtime, skill, f"{skills_dir}/{skill.name}", self.spec.workdir
@@ -86,7 +84,7 @@ class GeminiHarness(Harness):
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _gemini_config_dir(self.spec.workdir)
         result = runtime.exec(
-            ["sh", "-lc", f"ls -1 {cfg}/skills 2>/dev/null || true"],
+            f"ls -1 {cfg}/skills 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]

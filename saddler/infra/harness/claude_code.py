@@ -41,8 +41,10 @@ class ClaudeCodeHarness(Harness):
         return result.exit_code == 0
 
     def install(self, runtime: RuntimeBackend) -> None:
-        raise NotImplementedError(
-            "Claude Code harness installation is not supported; provide the binary in the runtime"
+        require_ok_exec(
+            runtime,
+            "curl -fsSL https://claude.ai/install.sh | bash",
+            self.spec.workdir,
         )
 
     def install_rules(self, runtime: RuntimeBackend, rules: list[RuleSpec]) -> None:
@@ -51,7 +53,7 @@ class ClaudeCodeHarness(Harness):
         claude_md = f"{self.spec.workdir}/CLAUDE.md"
         require_ok_exec(
             runtime,
-            ["sh", "-lc", f"mkdir -p {rules_dir}"],
+            f"mkdir -p {rules_dir}",
             self.spec.workdir,
         )
         for rule in rules:
@@ -61,12 +63,8 @@ class ClaudeCodeHarness(Harness):
             import_line = f"@.claude/rules/{rule.name}.md"
             require_ok_exec(
                 runtime,
-                [
-                    "sh",
-                    "-lc",
-                    f"grep -qF '{import_line}' {claude_md} 2>/dev/null"
-                    f" || printf '\\n{import_line}\\n' >> {claude_md}",
-                ],
+                f"grep -qF '{import_line}' {claude_md} 2>/dev/null"
+                f" || printf '\\n{import_line}\\n' >> {claude_md}",
                 self.spec.workdir,
             )
 
@@ -75,7 +73,7 @@ class ClaudeCodeHarness(Harness):
         skills_dir = f"{cfg}/skills"
         require_ok_exec(
             runtime,
-            ["sh", "-lc", f"mkdir -p {skills_dir}"],
+            f"mkdir -p {skills_dir}",
             self.spec.workdir,
         )
         for skill in skills:
@@ -86,7 +84,7 @@ class ClaudeCodeHarness(Harness):
     def list_rules(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _claude_config_dir(self.spec.workdir)
         result = runtime.exec(
-            ["sh", "-lc", f"ls -1 {cfg}/rules 2>/dev/null || true"],
+            f"ls -1 {cfg}/rules 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]
@@ -94,7 +92,7 @@ class ClaudeCodeHarness(Harness):
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _claude_config_dir(self.spec.workdir)
         result = runtime.exec(
-            ["sh", "-lc", f"ls -1 {cfg}/skills 2>/dev/null || true"],
+            f"ls -1 {cfg}/skills 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]
@@ -103,4 +101,10 @@ class ClaudeCodeHarness(Harness):
         runtime.exec_fg([self.config.binary], cwd=self.spec.workdir)
 
     def acp(self, runtime: RuntimeBackend) -> None:
-        raise NotImplementedError("Claude Code does not have a built-in acp command")
+        if runtime.exec("which claude-agent-acp", self.spec.workdir).exit_code != 0:
+            require_ok_exec(
+                runtime,
+                "npm install -g @agentclientprotocol/claude-agent-acp",
+                self.spec.workdir,
+            )
+        runtime.exec_fg("claude-agent-acp", cwd=self.spec.workdir)

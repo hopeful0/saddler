@@ -51,8 +51,10 @@ class CodexHarness(Harness):
         return result.exit_code == 0
 
     def install(self, runtime: RuntimeBackend) -> None:
-        raise NotImplementedError(
-            "Codex harness installation is not supported; provide the binary in the runtime"
+        require_ok_exec(
+            runtime,
+            "npm i -g @openai/codex",
+            self.spec.workdir,
         )
 
     def install_rules(self, runtime: RuntimeBackend, rules: list[RuleSpec]) -> None:
@@ -68,9 +70,7 @@ class CodexHarness(Harness):
     def install_skills(self, runtime: RuntimeBackend, skills: list[SkillSpec]) -> None:
         cfg = _codex_config_dir(self.spec.workdir)
         prompts_dir = f"{cfg}/prompts"
-        require_ok_exec(
-            runtime, ["sh", "-lc", f"mkdir -p {prompts_dir}"], self.spec.workdir
-        )
+        require_ok_exec(runtime, f"mkdir -p {prompts_dir}", self.spec.workdir)
         for skill in skills:
             fetch_and_copy_skill_dir(
                 runtime, skill, f"{prompts_dir}/{skill.name}", self.spec.workdir
@@ -84,7 +84,7 @@ class CodexHarness(Harness):
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _codex_config_dir(self.spec.workdir)
         result = runtime.exec(
-            ["sh", "-lc", f"ls -1 {cfg}/prompts 2>/dev/null || true"],
+            f"ls -1 {cfg}/prompts 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]
@@ -93,4 +93,10 @@ class CodexHarness(Harness):
         runtime.exec_fg([self.config.binary], cwd=self.spec.workdir)
 
     def acp(self, runtime: RuntimeBackend) -> None:
-        raise NotImplementedError("Codex does not have a built-in acp command")
+        if runtime.exec("which codex-acp", self.spec.workdir).exit_code != 0:
+            require_ok_exec(
+                runtime,
+                "npm install -g @zed-industries/codex-acp",
+                self.spec.workdir,
+            )
+        runtime.exec_fg("codex-acp", cwd=self.spec.workdir)
