@@ -5,7 +5,7 @@ import logging
 
 from ..app.runtime import RuntimeUseCase
 from ..app.storage import StorageUseCase
-from ..runtime.backend import get_runtime_backend_cls
+from ..runtime.backend import Command, ExecResult, get_runtime_backend_cls
 from ..runtime.model import (
     Runtime,
     RuntimeHostBindMount,
@@ -75,6 +75,35 @@ class RuntimeApiService:
 
     def inspect(self, ref: str) -> Runtime:
         return self._uc.get_runtime(ref)
+
+    def exec(
+        self,
+        ref: str,
+        command: Command,
+        *,
+        cwd: str,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> ExecResult:
+        runtime = self._uc.get_runtime(ref)
+        backend = get_runtime_backend_cls(runtime.spec.backend_type).load_state(
+            runtime.spec, runtime.backend_state
+        )
+        return backend.exec(command, cwd=cwd, env=env, timeout=timeout)
+
+    def exec_fg(
+        self,
+        ref: str,
+        command: Command,
+        *,
+        cwd: str,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        runtime = self._uc.get_runtime(ref)
+        backend = get_runtime_backend_cls(runtime.spec.backend_type).load_state(
+            runtime.spec, runtime.backend_state
+        )
+        backend.exec_fg(command, cwd=cwd, env=env)
 
     def _resolve_mount(self, m: MountSpec):
         mode = RuntimeMountMode(m.mode.lower())

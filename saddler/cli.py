@@ -648,6 +648,64 @@ def runtime_harnesses(
         typer.echo(f"{harness_name:<20} {status}")
 
 
+@runtime_app.command(
+    "exec",
+)
+def runtime_exec(
+    ref: str = typer.Argument(
+        ..., help="Runtime name or ID", autocompletion=_complete_runtime_ref
+    ),
+    command: list[str] = typer.Argument(
+        ...,
+        metavar="COMMAND [ARGS]...",
+        help=_help("Command to run inside runtime. Use `--` before command if needed."),
+    ),
+    cwd: str = typer.Option("/", "--cwd", "-C", help="Working directory in runtime"),
+    env_entries: list[str] | None = typer.Option(
+        None, "--env", "-e", help="KEY=VALUE env (repeatable)"
+    ),
+    timeout: float | None = typer.Option(
+        None, "--timeout", "-t", help="Execution timeout in seconds"
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Attach stdin/stdout/stderr for interactive execution",
+    ),
+) -> None:
+    """Execute a command inside a runtime (for quick testing/debug)."""
+    env = _parse_env(env_entries)
+    if interactive:
+        if timeout is not None:
+            raise typer.BadParameter("--timeout is not supported with --interactive")
+        try:
+            _runtime_api().exec_fg(
+                ref,
+                command,
+                cwd=cwd,
+                env=env,
+            )
+        except RuntimeError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+        return
+
+    result = _runtime_api().exec(
+        ref,
+        command,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+    )
+    if result.stdout:
+        typer.echo(result.stdout, nl=False)
+    if result.stderr:
+        typer.echo(result.stderr, nl=False, err=True)
+    if result.exit_code != 0:
+        raise typer.Exit(result.exit_code)
+
+
 # ---------------------------------------------------------------------------
 # Agent commands
 # ---------------------------------------------------------------------------
