@@ -240,6 +240,8 @@ class DockerPopen:
             except Exception:
                 pass
         self.stdin = None  # type: ignore[assignment]
+        if hasattr(self._socket, "close"):
+            self._socket.close()  # type: ignore[attr-defined]
 
     def __enter__(self) -> Self:
         return self
