@@ -969,13 +969,13 @@ class DockerRuntimeBackend:
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
-        self._docker_subprocess().Popen(
-            command=command,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        container = self._client().containers.get(self._require_container_id())
+        container.exec_run(
+            ["sh", "-lc", normalize_shell_command(command)],
+            detach=True,
+            workdir=cwd,
+            environment=env or {},
+            user=self.docker_spec.user or "",
         )
 
     def exec_fg(
