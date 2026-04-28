@@ -16,7 +16,7 @@ import tty
 import uuid
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import IO, Any, Literal, Self, TypeAlias
+from typing import IO, Any, Literal, Self
 
 import docker
 from docker.api.client import APIClient
@@ -53,9 +53,6 @@ class DockerRuntimeState(BaseModel):
     container_id: str | None = None
     container_name: str | None = None
     image: str | None = None
-
-
-StdioValue: TypeAlias = int | IO[Any] | None
 
 
 class DockerPopen:
@@ -555,44 +552,6 @@ class _DockerSocketWriter(io.BufferedWriter):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_output_sink(spec: StdioValue) -> int | IO[Any] | None:
-    if spec in (None, subprocess.PIPE, subprocess.DEVNULL, subprocess.STDOUT):
-        return None
-    return spec
-
-
-def _resolve_tty_stream(
-    spec: StdioValue, *, fallback: IO[Any] | None
-) -> IO[Any] | None:
-    stream = fallback if spec is None else spec
-    if stream is None or isinstance(stream, int):
-        return None
-    if stream in (subprocess.PIPE, subprocess.DEVNULL, subprocess.STDOUT):
-        return None
-    if hasattr(stream, "isatty") and stream.isatty():
-        return stream
-    return None
-
-
-def _write_output_sink(sink: int | IO[Any] | None, payload: bytes) -> None:
-    if sink is None or not payload:
-        return
-    if isinstance(sink, int):
-        os.write(sink, payload)
-        return
-    if hasattr(sink, "buffer"):
-        sink.buffer.write(payload)  # type: ignore[attr-defined]
-        sink.buffer.flush()  # type: ignore[attr-defined]
-        return
-    if hasattr(sink, "write"):
-        try:
-            sink.write(payload)  # type: ignore[attr-defined]
-        except TypeError:
-            sink.write(payload.decode(errors="replace"))  # type: ignore[attr-defined]
-        if hasattr(sink, "flush"):
-            sink.flush()  # type: ignore[attr-defined]
-
-
 def _read_pid_and_buffer(
     stream: Iterator[bytes],
 ) -> tuple[str, list[bytes]]:
@@ -627,14 +586,6 @@ def _remaining_timeout(
     if cap is None:
         return remaining
     return min(remaining, cap)
-
-
-def _poll_mux_socket(sock: object, deadline: float | None) -> bool:
-    if not hasattr(sock, "fileno"):
-        return True
-    wait_s = _remaining_timeout(deadline, cap=0.05)
-    ready, _, _ = select.select([sock], [], [], wait_s)
-    return sock in ready
 
 
 def _read_exact(sock: object, size: int, deadline: float | None) -> bytes | None:
