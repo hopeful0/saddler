@@ -10,9 +10,7 @@ import socket
 import subprocess
 import sys
 import tarfile
-import termios
 import time
-import tty
 import uuid
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -148,6 +146,9 @@ class DockerPopen:
 
     def forward_tty(self) -> None:
         """Forward the current terminal's stdin/stdout to the container exec."""
+        import termios
+        import tty
+
         sock = self._socket
         tty_stdout = sys.stdout
         stdout_buf = tty_stdout.buffer if hasattr(tty_stdout, "buffer") else None
@@ -391,9 +392,12 @@ class DockerSubprocess:
     how to forward stdin/stdout to the terminal.
     """
 
-    def __init__(self, *, api: APIClient, container_id: str) -> None:
+    def __init__(
+        self, *, api: APIClient, container_id: str, user: str | None = None
+    ) -> None:
         self._api = api
         self._container_id = container_id
+        self._user = user
 
     def Popen(
         self,
@@ -418,6 +422,7 @@ class DockerSubprocess:
             environment=env or None,
             tty=interactive,
             stdin=True,
+            user=self._user or "",
         )
         exec_id = payload["Id"]
         raw_sock = self._api.exec_start(exec_id, socket=True, tty=interactive)
@@ -745,6 +750,10 @@ def _extract_archive_to_host(
     src_is_dir = bool(stat and stat.get("mode") and int(stat["mode"]) & 0o040000)
     dest_path = Path(dest_host)
 
+    _extract_kw: dict[str, object] = {"set_attrs": False}
+    if sys.version_info >= (3, 12):
+        _extract_kw["filter"] = "data"
+
     with tarfile.open(fileobj=_IterStream(archive_stream), mode="r|*") as tar:
         if src_is_dir:
             dest_path.mkdir(parents=True, exist_ok=True)
@@ -752,7 +761,7 @@ def _extract_archive_to_host(
                 _check_member_path(member.name)
                 if member.issym():
                     _check_member_path(member.linkname)
-                tar.extract(member, path=dest_path, set_attrs=False)
+                tar.extract(member, path=dest_path, **_extract_kw)
         else:
             if dest_path.exists() and dest_path.is_dir():
                 output_path = dest_path / src_name.name
@@ -890,7 +899,7 @@ class DockerRuntimeBackend:
             ["sh", "-lc", normalize_shell_command(command)],
             detach=True,
             workdir=cwd,
-            environment=env or {},
+            environment=env or None,
             user=self.docker_spec.user or "",
         )
 
@@ -968,4 +977,5 @@ class DockerRuntimeBackend:
         return DockerSubprocess(
             api=self._client().api,
             container_id=self._require_container_id(),
+            user=self.docker_spec.user,
         )

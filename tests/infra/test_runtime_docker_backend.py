@@ -250,6 +250,25 @@ def test_exec_bg_uses_exec_run_with_detach(monkeypatch: pytest.MonkeyPatch) -> N
     assert cmd == ["sh", "-lc", "sleep 10"]
     assert kwargs.get("detach") is True
     assert kwargs.get("workdir") == "/workspace"
+    assert kwargs.get("environment") is None
+
+
+def test_spawn_passes_user_to_exec_create() -> None:
+    fake_api = FakeExecApi([_mux_frame(1, b"123\n")])
+    DockerSubprocess(api=fake_api, container_id="cid-123", user="1000:1000").Popen(
+        "echo hi",
+        cwd="/workspace",
+    )
+    assert fake_api.exec_create_calls[0].get("user") == "1000:1000"
+
+
+def test_spawn_passes_empty_user_when_unset() -> None:
+    fake_api = FakeExecApi([_mux_frame(1, b"123\n")])
+    DockerSubprocess(api=fake_api, container_id="cid-123").Popen(
+        "echo hi",
+        cwd="/workspace",
+    )
+    assert fake_api.exec_create_calls[0].get("user") == ""
 
 
 def _mux_frame(stream_type: int, payload: bytes) -> bytes:
