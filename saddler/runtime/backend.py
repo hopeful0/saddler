@@ -10,6 +10,7 @@ from .model import RuntimeSpec
 
 from ..shared.registry import Registry
 
+# str is passed as-is; list[str] is joined via shlex.join — both run under shell semantics (sh -lc).
 Command = str | list[str]
 
 
