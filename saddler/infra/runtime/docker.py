@@ -15,9 +15,8 @@ import time
 import tty
 import uuid
 from collections.abc import Iterable, Iterator
-from itertools import chain
 from pathlib import Path
-from typing import IO, Any, Self, TypeAlias
+from typing import IO, Any, Literal, Self, TypeAlias
 
 import docker
 from docker.api.client import APIClient
@@ -60,6 +59,12 @@ StdioValue: TypeAlias = int | IO[Any] | None
 
 
 class DockerPopen:
+    """Low-level handle for a running docker exec session.
+
+    Knows about the exec socket and mux/tty framing protocol.
+    Does not touch sys.stdin / sys.stdout — I/O routing is the caller's job.
+    """
+
     _ALLOWED_SIGNALS = frozenset({"TERM", "KILL", "INT", "HUP", "QUIT"})
 
     def __init__(
@@ -69,191 +74,98 @@ class DockerPopen:
         exec_id: str,
         container_id: str,
         pid: int,
-        socket: object,
-        stream: Iterable[bytes] | None = None,
-        demux_capture: bool = False,
+        io_socket: object,
+        mode: Literal["mux", "tty"],
         initial_stdout: list[bytes] | None = None,
         initial_stderr: list[bytes] | None = None,
         args: Command | None = None,
-        stdin: StdioValue = None,
-        stdout: StdioValue = None,
-        stderr: StdioValue = None,
     ) -> None:
         self._api = api
         self._exec_id = exec_id
         self._container_id = container_id
-        self._stream = iter(stream) if stream is not None else None
-        self._socket = socket
-        self._demux_capture = demux_capture
-        self._initial_stdout = initial_stdout or []
-        self._initial_stderr = initial_stderr or []
+        self._socket = io_socket
+        self._mode = mode
+        self._initial_stdout: list[bytes] = initial_stdout or []
+        self._initial_stderr: list[bytes] = initial_stderr or []
         self.args = args
         self.pid = pid
         self.returncode: int | None = None
-        self._forward_stdio = stdin is None and stdout is None and stderr is None
-        self._tty_stdin = _resolve_tty_stream(stdin, fallback=sys.stdin)
-        self._tty_stdout = _resolve_tty_stream(stdout, fallback=sys.stdout)
-        self._interactive_tty = bool(
-            self._tty_stdin is not None and self._tty_stdout is not None
-        )
-        self._capture_stdout = stdout == subprocess.PIPE or stderr == subprocess.STDOUT
-        self._capture_stderr = stderr == subprocess.PIPE
-        self._merge_stderr_to_stdout = stderr == subprocess.STDOUT
         self._closed = False
         self._stdin_closed = False
-        self.stdin: io.BufferedWriter | None = None
-        self.stdout: io.BufferedReader | None = None
-        self.stderr: io.BufferedReader | None = None
-        self._stdin_source: IO[Any] | None = None
-        self._stdout_sink: int | IO[Any] | None = None
-        self._stderr_sink: int | IO[Any] | None = None
-        self._stdout_buf = io.BytesIO(b"".join(self._initial_stdout))
-        self._stderr_buf = io.BytesIO(b"".join(self._initial_stderr))
-        if stdin == subprocess.PIPE:
-            self.stdin = _DockerSocketWriter(self)
-        elif (
-            stdin not in (None, subprocess.DEVNULL)
-            and stdin != subprocess.PIPE
-            and hasattr(stdin, "read")
-        ):
-            self._stdin_source = stdin
-        self._stdout_sink = _resolve_output_sink(stdout)
-        if not self._merge_stderr_to_stdout:
-            self._stderr_sink = _resolve_output_sink(stderr)
-        if self._demux_capture and stdout == subprocess.PIPE:
-            self.stdout = io.BufferedReader(_MemoryBufferReader(self._stdout_buf))
-        if self._demux_capture and stderr == subprocess.PIPE:
-            self.stderr = io.BufferedReader(_MemoryBufferReader(self._stderr_buf))
+        self.stdin: _DockerSocketWriter = _DockerSocketWriter(self)
+        self.stdout: None = None
+        self.stderr: None = None
+
+    # ------------------------------------------------------------------
+    # Public subprocess-compatible interface
+    # ------------------------------------------------------------------
 
     def communicate(
-        self, input: str | bytes | None = None, timeout: float | None = None
-    ) -> tuple[str, str]:
-        if self._forward_stdio and self._interactive_tty:
-            self._forward_current_stdio()
-            return "", ""
+        self, input: bytes | None = None, timeout: float | None = None
+    ) -> tuple[bytes, bytes]:
+        """Send *input* bytes to the process and collect its output.
 
+        Returns (stdout_bytes, stderr_bytes).  Always raw bytes; decoding is
+        the caller's responsibility.
+        """
         deadline = None if timeout is None else time.monotonic() + timeout
-        if self._forward_stdio and not self._interactive_tty:
-            stdin_data: str | bytes | None = None
-            if sys.stdin and not sys.stdin.isatty():
-                if hasattr(sys.stdin, "buffer"):
-                    stdin_data = sys.stdin.buffer.read()
-                else:
-                    stdin_data = sys.stdin.read()
-            stdout, stderr = self._communicate_capture(
-                input=stdin_data if input is None else input,
-                deadline=deadline,
-                timeout=timeout,
-            )
-            if stdout:
-                if hasattr(sys.stdout, "buffer"):
-                    sys.stdout.buffer.write(stdout.encode())
-                    sys.stdout.buffer.flush()
-                else:
-                    sys.stdout.write(stdout)
-                    sys.stdout.flush()
-            if stderr:
-                if hasattr(sys.stderr, "buffer"):
-                    sys.stderr.buffer.write(stderr.encode())
-                    sys.stderr.buffer.flush()
-                else:
-                    sys.stderr.write(stderr)
-                    sys.stderr.flush()
-            return "", ""
-        return self._communicate_capture(
-            input=input, deadline=deadline, timeout=timeout
-        )
+        if input is not None:
+            _socket_send(self._socket, input)
+        self._close_stdin()
+        if self._mode == "mux":
+            return self._collect_mux(deadline, timeout)
+        return self._collect_tty(deadline, timeout)
 
-    def _communicate_capture(
-        self,
-        *,
-        input: str | bytes | None,
-        deadline: float | None,
-        timeout: float | None,
-    ) -> tuple[str, str]:
-        if (
-            input is None
-            and self._stdin_source is not None
-            and hasattr(self._stdin_source, "read")
-        ):
-            input = self._stdin_source.read()  # type: ignore[attr-defined]
-        if input is not None and self._socket is not None:
-            if isinstance(input, str):
-                payload = input.encode()
-            else:
-                payload = input
-            if payload:
-                _socket_send(self._socket, payload)
-            self._close_stdin()
-        if self._demux_capture:
-            stdout_chunks = list(self._initial_stdout) if self._capture_stdout else []
-            stderr_chunks = list(self._initial_stderr) if self._capture_stderr else []
-            socket_open = True
-            while True:
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
-                if socket_open and _poll_mux_socket(self._socket, deadline):
-                    frame = _read_mux_frame(self._socket, deadline)
-                    if frame is None:
-                        socket_open = False
-                    else:
-                        self._dispatch_mux_frame(*frame, stdout_chunks, stderr_chunks)
-                exit_code = self.poll()
-                if exit_code is not None and not socket_open:
-                    return (
-                        b"".join(stdout_chunks).decode(errors="replace"),
-                        b"".join(stderr_chunks).decode(errors="replace"),
-                    )
-            # unreachable
+    def poll(self) -> int | None:
+        details = self._api.exec_inspect(self._exec_id)
+        exit_code = details.get("ExitCode")
+        self.returncode = None if exit_code is None else int(exit_code)
+        return self.returncode
 
-        if self._stream is None:
-            raise RuntimeError("docker exec stream is not available for capture")
-        chunks: list[bytes] = []
-        for chunk in self._stream:
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            details = self._api.exec_inspect(self._exec_id)
+            exit_code = details.get("ExitCode")
+            if exit_code is not None:
+                self.returncode = int(exit_code)
+                return self.returncode
             if deadline is not None and time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
-            if not chunk:
-                continue
-            chunks.append(chunk if isinstance(chunk, bytes) else bytes(chunk))
-        self._stdout_buf.write(b"".join(chunks))
-        return b"".join(chunks).decode(errors="replace"), ""
+            time.sleep(0.02)
 
-    def _dispatch_mux_frame(
-        self,
-        stream_type: int,
-        payload: bytes,
-        stdout_chunks: list[bytes],
-        stderr_chunks: list[bytes],
-    ) -> None:
-        if stream_type == 1:
-            _write_output_sink(self._stdout_sink, payload)
-            if self._capture_stdout:
-                stdout_chunks.append(payload)
-                self._stdout_buf.write(payload)
-        elif stream_type == 2:
-            if self._merge_stderr_to_stdout:
-                _write_output_sink(self._stdout_sink, payload)
-                if self._capture_stdout:
-                    stdout_chunks.append(payload)
-                    self._stdout_buf.write(payload)
-            else:
-                _write_output_sink(self._stderr_sink, payload)
-                if self._capture_stderr:
-                    stderr_chunks.append(payload)
-                    self._stderr_buf.write(payload)
+    def send_signal(self, sig: int | str) -> None:
+        if isinstance(sig, int):
+            sig_name = signal.Signals(sig).name
+            sig_name = sig_name.removeprefix("SIG")
+        else:
+            sig_name = sig.removeprefix("SIG").upper()
+        sig_name = self._normalize_signal_name(sig_name)
+        self._signal_process(sig_name)
 
-    def _forward_current_stdio(self) -> None:
+    def terminate(self) -> None:
+        self.send_signal("TERM")
+
+    def kill(self) -> None:
+        self.send_signal("KILL")
+
+    def forward_tty(self) -> None:
+        """Forward the current terminal's stdin/stdout to the container exec."""
         sock = self._socket
-        tty_stdout = self._tty_stdout if self._tty_stdout is not None else sys.stdout
-        stdout = tty_stdout.buffer if hasattr(tty_stdout, "buffer") else None
-        stdin_fd = self._tty_stdin.fileno() if self._tty_stdin is not None else None
+        tty_stdout = sys.stdout
+        stdout_buf = tty_stdout.buffer if hasattr(tty_stdout, "buffer") else None
+        stdin_fd: int | None = None
+        try:
+            stdin_fd = sys.stdin.fileno() if sys.stdin else None
+        except (AttributeError, io.UnsupportedOperation):
+            stdin_fd = None
         original_tty = None
         old_winch_handler = None
 
         def write_stdout(chunk: bytes) -> None:
-            if stdout is not None:
-                stdout.write(chunk)
-                stdout.flush()
+            if stdout_buf is not None:
+                stdout_buf.write(chunk)
+                stdout_buf.flush()
                 return
             sys.stdout.write(chunk.decode(errors="replace"))
             sys.stdout.flush()
@@ -265,7 +177,6 @@ class DockerPopen:
             try:
                 self._api.exec_resize(self._exec_id, height=lines, width=cols)
             except Exception:
-                # Resize failures should not break interactive sessions.
                 return
 
         try:
@@ -313,38 +224,133 @@ class DockerPopen:
             if hasattr(signal, "SIGWINCH") and old_winch_handler is not None:
                 signal.signal(signal.SIGWINCH, old_winch_handler)
 
-    def poll(self) -> int | None:
-        details = self._api.exec_inspect(self._exec_id)
-        exit_code = details.get("ExitCode")
-        self.returncode = None if exit_code is None else int(exit_code)
-        return self.returncode
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._close_stdin()
+        if self.returncode is None and self.poll() is None:
+            try:
+                self.terminate()
+                time.sleep(0.05)
+                if self.poll() is None:
+                    self.kill()
+            except Exception:
+                pass
+        if self.stdin is not None:
+            try:
+                self.stdin.close()
+            except Exception:
+                pass
+        self.stdin = None  # type: ignore[assignment]
 
-    def wait(self, timeout: float | None = None) -> int:
-        deadline = None if timeout is None else time.monotonic() + timeout
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------
+    # Factory constructors — one per Docker exec socket protocol
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_tty_exec(
+        cls,
+        *,
+        api: APIClient,
+        exec_id: str,
+        container_id: str,
+        io_socket: object,
+        args: Command | None = None,
+    ) -> Self:
+        stream_iter = _socket_chunk_iter(io_socket)
+        pid_line, buffered = _read_pid_and_buffer(stream_iter)
+        pid = _parse_pid_line(pid_line)
+        return cls(
+            api=api,
+            exec_id=exec_id,
+            container_id=container_id,
+            pid=pid,
+            io_socket=io_socket,
+            mode="tty",
+            initial_stdout=buffered,
+            args=args,
+        )
+
+    @classmethod
+    def from_mux_exec(
+        cls,
+        *,
+        api: APIClient,
+        exec_id: str,
+        container_id: str,
+        io_socket: object,
+        args: Command | None = None,
+    ) -> Self:
+        pid_line, initial_stdout, initial_stderr = _read_pid_and_buffer_mux(
+            io_socket, timeout=5.0
+        )
+        pid = _parse_pid_line(pid_line)
+        return cls(
+            api=api,
+            exec_id=exec_id,
+            container_id=container_id,
+            pid=pid,
+            io_socket=io_socket,
+            mode="mux",
+            initial_stdout=initial_stdout,
+            initial_stderr=initial_stderr,
+            args=args,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _collect_mux(
+        self,
+        deadline: float | None,
+        timeout: float | None,
+    ) -> tuple[bytes, bytes]:
+        stdout_chunks: list[bytes] = list(self._initial_stdout)
+        stderr_chunks: list[bytes] = list(self._initial_stderr)
+
+        # Phase 1: drain the multiplexed stream until socket EOF.
         while True:
-            details = self._api.exec_inspect(self._exec_id)
-            exit_code = details.get("ExitCode")
-            if exit_code is not None:
-                self.returncode = int(exit_code)
-                return self.returncode
             if deadline is not None and time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
-            time.sleep(0.02)
+            try:
+                frame = _read_mux_frame(self._socket, deadline)
+            except TimeoutError:
+                raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
+            if frame is None:
+                break
+            stream_type, payload = frame
+            if stream_type == 1:
+                stdout_chunks.append(payload)
+            elif stream_type == 2:
+                stderr_chunks.append(payload)
 
-    def send_signal(self, sig: int | str) -> None:
-        if isinstance(sig, int):
-            sig_name = signal.Signals(sig).name
-            sig_name = sig_name.removeprefix("SIG")
-        else:
-            sig_name = sig.removeprefix("SIG").upper()
-        sig_name = self._normalize_signal_name(sig_name)
-        self._signal_process(sig_name)
+        # Phase 2: wait for the process exit code (socket closed means data done).
+        while True:
+            if self.poll() is not None:
+                return b"".join(stdout_chunks), b"".join(stderr_chunks)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
+            time.sleep(0.01)
 
-    def terminate(self) -> None:
-        self.send_signal("TERM")
-
-    def kill(self) -> None:
-        self.send_signal("KILL")
+    def _collect_tty(
+        self,
+        deadline: float | None,
+        timeout: float | None,
+    ) -> tuple[bytes, bytes]:
+        chunks: list[bytes] = list(self._initial_stdout)
+        for chunk in _socket_chunk_iter(self._socket):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args or [], timeout or 0)
+            chunks.append(chunk)
+        return b"".join(chunks), b""
 
     def _signal_process(self, sig: str) -> None:
         try:
@@ -353,14 +359,13 @@ class DockerPopen:
                 cmd=[
                     "sh",
                     "-lc",
-                    (f"kill -{sig} -{self.pid} 2>/dev/null || kill -{sig} {self.pid}"),
+                    f"kill -{sig} -{self.pid} 2>/dev/null || kill -{sig} {self.pid}",
                 ],
                 tty=False,
                 stdin=False,
             )
             self._api.exec_start(payload["Id"], stream=False, demux=False, tty=False)
         except Exception:
-            # Timeout should still surface even if kill best-effort fails.
             return
 
     @classmethod
@@ -379,100 +384,13 @@ class DockerPopen:
         except Exception:
             return
 
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._close_stdin()
-        if self.returncode is None and self.poll() is None:
-            try:
-                self.terminate()
-                time.sleep(0.05)
-                if self.poll() is None:
-                    self.kill()
-            except Exception:
-                pass
-        for stream in (self.stdin, self.stdout, self.stderr):
-            if stream is None:
-                continue
-            try:
-                stream.close()
-            except Exception:
-                pass
-        self.stdin = None
-        self.stdout = None
-        self.stderr = None
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    @classmethod
-    def from_tty_exec(
-        cls,
-        *,
-        api: APIClient,
-        exec_id: str,
-        container_id: str,
-        socket: object,
-        args: Command | None = None,
-        stdin: StdioValue = None,
-        stdout: StdioValue = None,
-        stderr: StdioValue = None,
-    ) -> Self:
-        stream_iter = _socket_chunk_iter(socket)
-        pid_line, buffered = _read_pid_and_buffer(stream_iter)
-        pid = _parse_pid_line(pid_line)
-        return cls(
-            api=api,
-            exec_id=exec_id,
-            container_id=container_id,
-            pid=pid,
-            socket=socket,
-            stream=chain(buffered, stream_iter),
-            args=args,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-        )
-
-    @classmethod
-    def from_mux_exec(
-        cls,
-        *,
-        api: APIClient,
-        exec_id: str,
-        container_id: str,
-        socket: object,
-        args: Command | None = None,
-        stdin: StdioValue = None,
-        stdout: StdioValue = None,
-        stderr: StdioValue = None,
-    ) -> Self:
-        pid_line, initial_stdout, initial_stderr = _read_pid_and_buffer_mux(
-            socket, timeout=5.0
-        )
-        pid = _parse_pid_line(pid_line)
-        return cls(
-            api=api,
-            exec_id=exec_id,
-            container_id=container_id,
-            pid=pid,
-            socket=socket,
-            demux_capture=True,
-            initial_stdout=initial_stdout,
-            initial_stderr=initial_stderr,
-            args=args,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-        )
-
 
 class DockerSubprocess:
-    """A lightweight subprocess-like facade on top of Docker exec."""
+    """Subprocess-like facade over Docker exec.
+
+    Owns I/O routing decisions: when to use TTY protocol, how to decode output,
+    how to forward stdin/stdout to the terminal.
+    """
 
     def __init__(self, *, api: APIClient, container_id: str) -> None:
         self._api = api
@@ -484,39 +402,36 @@ class DockerSubprocess:
         *,
         cwd: str,
         env: dict[str, str] | None = None,
-        stdin: StdioValue = None,
-        stdout: StdioValue = None,
-        stderr: StdioValue = None,
+        interactive: bool = False,
     ) -> DockerPopen:
+        """Open a docker exec session.
+
+        Use interactive=True only when both sys.stdin and sys.stdout are ttys;
+        the caller is responsible for checking.  interactive=True uses the Docker
+        TTY protocol; False uses the multiplexed (demux) protocol.
+        """
         cmd_str = normalize_shell_command(command)
         wrapper = self._build_shell_wrapper(cmd_str)
-        use_tty_protocol = bool(
-            _resolve_tty_stream(stdin, fallback=sys.stdin)
-            and _resolve_tty_stream(stdout, fallback=sys.stdout)
-        )
         payload = self._api.exec_create(
             container=self._container_id,
             cmd=["sh", "-lc", wrapper],
             workdir=cwd,
             environment=env or None,
-            tty=use_tty_protocol,
-            stdin=(stdin != subprocess.DEVNULL),
+            tty=interactive,
+            stdin=True,
         )
         exec_id = payload["Id"]
-        raw_sock = self._api.exec_start(exec_id, socket=True, tty=use_tty_protocol)
+        raw_sock = self._api.exec_start(exec_id, socket=True, tty=interactive)
         io_socket = getattr(raw_sock, "_sock", raw_sock)
         factory = (
-            DockerPopen.from_tty_exec if use_tty_protocol else DockerPopen.from_mux_exec
+            DockerPopen.from_tty_exec if interactive else DockerPopen.from_mux_exec
         )
         return factory(
             api=self._api,
             exec_id=exec_id,
             container_id=self._container_id,
-            socket=io_socket,
+            io_socket=io_socket,
             args=command,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
         )
 
     def run(
@@ -529,34 +444,25 @@ class DockerSubprocess:
         timeout: float | None = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        with self.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        ) as proc:
+        input_bytes = input.encode() if isinstance(input, str) else input
+        with self.Popen(command, cwd=cwd, env=env, interactive=False) as proc:
             try:
-                stdout, stderr = proc.communicate(input=input, timeout=timeout)
-                returncode = proc.wait(timeout=timeout)
+                stdout_b, stderr_b = proc.communicate(
+                    input=input_bytes, timeout=timeout
+                )
             except subprocess.TimeoutExpired:
-                self._cleanup_timed_out_process(proc)
+                _cleanup_timed_out_process(proc)
                 raise
-        completed = subprocess.CompletedProcess(
-            args=command,
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
-        )
+        returncode = proc.returncode  # set by _collect_mux poll loop
+        stdout = stdout_b.decode(errors="replace")
+        stderr = stderr_b.decode(errors="replace")
         if check and returncode != 0:
             raise subprocess.CalledProcessError(
-                returncode,
-                command,
-                output=stdout,
-                stderr=stderr,
+                returncode, command, output=stdout, stderr=stderr
             )
-        return completed
+        return subprocess.CompletedProcess(
+            args=command, returncode=returncode, stdout=stdout, stderr=stderr
+        )
 
     def run_fg(
         self,
@@ -565,19 +471,20 @@ class DockerSubprocess:
         cwd: str,
         env: dict[str, str] | None = None,
     ) -> None:
-        with self.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdin=None,
-            stdout=None,
-            stderr=None,
-        ) as proc:
+        interactive = bool(sys.stdin and sys.stdin.isatty())
+        with self.Popen(command, cwd=cwd, env=env, interactive=interactive) as proc:
             try:
-                proc.communicate()
-                exit_code = proc.wait()
+                if interactive:
+                    proc.forward_tty()
+                    exit_code = proc.wait()
+                else:
+                    stdin_data = _read_stdin_bytes()
+                    stdout_b, stderr_b = proc.communicate(input=stdin_data)
+                    _write_bytes_to_fd(sys.stdout, stdout_b)
+                    _write_bytes_to_fd(sys.stderr, stderr_b)
+                    exit_code = proc.returncode
             except BaseException:
-                self._cleanup_timed_out_process(proc)
+                _cleanup_timed_out_process(proc)
                 raise
         if exit_code != 0:
             raise RuntimeError(f"docker exec failed with exit code {exit_code}")
@@ -586,26 +493,42 @@ class DockerSubprocess:
     def _build_shell_wrapper(command: str) -> str:
         return f"echo $$; exec sh -lc {shlex.quote(command)}"
 
-    @staticmethod
-    def _cleanup_timed_out_process(proc: DockerPopen) -> None:
-        proc.terminate()
-        time.sleep(0.05)
-        if proc.poll() is None:
-            proc.kill()
+
+# ---------------------------------------------------------------------------
+# Module-level I/O helpers used by DockerSubprocess
+# ---------------------------------------------------------------------------
 
 
-class _MemoryBufferReader(io.RawIOBase):
-    def __init__(self, buf: io.BytesIO) -> None:
-        self._buf = buf
+def _cleanup_timed_out_process(proc: DockerPopen) -> None:
+    proc.terminate()
+    time.sleep(0.05)
+    if proc.poll() is None:
+        proc.kill()
 
-    def readable(self) -> bool:
-        return True
 
-    def readinto(self, b) -> int:
-        data = self._buf.read(len(b))
-        n = len(data)
-        b[:n] = data
-        return n
+def _read_stdin_bytes() -> bytes | None:
+    if not sys.stdin or sys.stdin.isatty():
+        return None
+    if hasattr(sys.stdin, "buffer"):
+        return sys.stdin.buffer.read()
+    return sys.stdin.read().encode()
+
+
+def _write_bytes_to_fd(stream: IO[Any], data: bytes) -> None:
+    if not data:
+        return
+    if hasattr(stream, "buffer"):
+        stream.buffer.write(data)  # type: ignore[attr-defined]
+        stream.buffer.flush()  # type: ignore[attr-defined]
+    else:
+        stream.write(data.decode(errors="replace"))  # type: ignore[attr-defined]
+        if hasattr(stream, "flush"):
+            stream.flush()  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Internal I/O adapters
+# ---------------------------------------------------------------------------
 
 
 class _DockerSocketWriter(io.BufferedWriter):
@@ -616,7 +539,7 @@ class _DockerSocketWriter(io.BufferedWriter):
     def writable(self) -> bool:
         return True
 
-    def write(self, b: bytes) -> int:
+    def write(self, b: bytes) -> int:  # type: ignore[override]
         if not b:
             return 0
         _socket_send(self._proc._socket, b)  # noqa: SLF001
@@ -625,6 +548,11 @@ class _DockerSocketWriter(io.BufferedWriter):
     def close(self) -> None:
         self._proc._close_stdin()  # noqa: SLF001
         super().close()
+
+
+# ---------------------------------------------------------------------------
+# Socket / stream primitives
+# ---------------------------------------------------------------------------
 
 
 def _resolve_output_sink(spec: StdioValue) -> int | IO[Any] | None:
@@ -702,7 +630,6 @@ def _remaining_timeout(
 
 
 def _poll_mux_socket(sock: object, deadline: float | None) -> bool:
-    """Returns True if the socket has data ready, or if it doesn't support select."""
     if not hasattr(sock, "fileno"):
         return True
     wait_s = _remaining_timeout(deadline, cap=0.05)

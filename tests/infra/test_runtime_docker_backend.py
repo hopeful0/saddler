@@ -46,7 +46,7 @@ class FakeContainer:
         self.stop_calls: list[int] = []
         self.remove_calls: list[bool] = []
         self.put_archive_calls: list[tuple[str, bytes]] = []
-        self.exec_run_calls: list[tuple[list[str], str | None]] = []
+        self.exec_run_calls: list[tuple] = []
         self.put_archive_result = True
         self.exec_run_result: tuple[int, bytes] = (0, b"")
 
@@ -66,8 +66,8 @@ class FakeContainer:
         self.put_archive_calls.append((path, data))
         return self.put_archive_result
 
-    def exec_run(self, cmd: list[str], user: str | None = None) -> tuple[int, bytes]:
-        self.exec_run_calls.append((cmd, user))
+    def exec_run(self, cmd: list[str], **kwargs: object) -> tuple[int, bytes]:
+        self.exec_run_calls.append((cmd, kwargs))
         return self.exec_run_result
 
 
@@ -188,31 +188,67 @@ def test_remove_uses_container_remove_and_clears_state(
 
 
 class FakeDockerPopen:
-    def __init__(
-        self,
-        *,
-        exit_code: int = 0,
-        stdout: str = "",
-        stderr: str = "",
-        pid: int = 123,
-    ) -> None:
+    def __init__(self, *, exit_code: int = 0, pid: int = 123) -> None:
         self.exit_code = exit_code
-        self.stdout = stdout
-        self.stderr = stderr
         self.pid = pid
-        self.communicate_calls = 0
+        self.returncode: int | None = None
 
     def communicate(
-        self, input: str | bytes | None = None, timeout: float | None = None
-    ) -> tuple[str, str]:
-        _ = input
-        _ = timeout
-        self.communicate_calls += 1
-        return self.stdout, self.stderr
+        self, input: bytes | None = None, timeout: float | None = None
+    ) -> tuple[bytes, bytes]:
+        self.returncode = self.exit_code
+        return b"", b""
 
     def wait(self, timeout: float | None = None) -> int:
-        _ = timeout
         return self.exit_code
+
+
+def test_exec_and_exec_fg_delegate_to_docker_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _make_backend()
+    run_calls: list[dict[str, object]] = []
+    run_fg_calls: list[dict[str, object]] = []
+
+    class FakeSubprocess:
+        def run(
+            self, command: Command, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            run_calls.append({"command": command, **kwargs})
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+
+        def run_fg(self, command: Command, **kwargs: object) -> None:
+            run_fg_calls.append({"command": command, **kwargs})
+
+    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
+
+    backend.exec("echo ok", cwd="/w")
+    backend.exec_fg("echo ok", cwd="/w")
+
+    assert len(run_calls) == 1
+    assert run_calls[0]["command"] == "echo ok"
+    assert run_calls[0]["cwd"] == "/w"
+    assert run_calls[0]["check"] is False
+    assert len(run_fg_calls) == 1
+    assert run_fg_calls[0]["command"] == "echo ok"
+    assert run_fg_calls[0]["cwd"] == "/w"
+
+
+def test_exec_bg_uses_exec_run_with_detach(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = _make_backend()
+    fake_container = FakeContainer(container_id="cid-123")
+    fake_containers = FakeContainersApi()
+    fake_containers.set_get_result(fake_container)
+    fake_client = SimpleNamespace(containers=fake_containers)
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.exec_bg("sleep 10", cwd="/workspace")
+
+    assert len(fake_container.exec_run_calls) == 1
+    cmd, kwargs = fake_container.exec_run_calls[0]
+    assert cmd == ["sh", "-lc", "sleep 10"]
+    assert kwargs.get("detach") is True
+    assert kwargs.get("workdir") == "/workspace"
 
 
 def _mux_frame(stream_type: int, payload: bytes) -> bytes:
@@ -237,47 +273,6 @@ class FakeSocket:
 
     def shutdown(self, _how: int) -> None:
         self.shutdown_called = True
-
-
-def test_exec_exec_bg_exec_fg_delegate_to_docker_subprocess(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _make_backend()
-    popen_calls: list[dict[str, object]] = []
-    run_calls: list[dict[str, object]] = []
-    run_fg_calls: list[dict[str, object]] = []
-
-    class FakeSubprocess:
-        def run(
-            self, command: Command, **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
-            run_calls.append({"command": command, **kwargs})
-            return subprocess.CompletedProcess(command, 0, "ok", "")
-
-        def Popen(self, command: Command, **kwargs: object) -> FakeDockerPopen:
-            popen_calls.append({"command": command, **kwargs})
-            return FakeDockerPopen(stdout="ok")
-
-        def run_fg(self, command: Command, **kwargs: object) -> None:
-            run_fg_calls.append({"command": command, **kwargs})
-
-    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
-
-    backend.exec("echo ok", cwd="/w")
-    backend.exec_bg("echo ok", cwd="/w")
-    backend.exec_fg("echo ok", cwd="/w")
-
-    assert len(run_calls) == 1
-    assert run_calls[0]["command"] == "echo ok"
-    assert run_calls[0]["cwd"] == "/w"
-    assert run_calls[0]["check"] is False
-    assert len(popen_calls) == 1
-    assert popen_calls[0]["stdin"] == subprocess.DEVNULL
-    assert popen_calls[0]["stdout"] == subprocess.DEVNULL
-    assert popen_calls[0]["stderr"] == subprocess.DEVNULL
-    assert len(run_fg_calls) == 1
-    assert run_fg_calls[0]["command"] == "echo ok"
-    assert run_fg_calls[0]["cwd"] == "/w"
 
 
 class FakeExecApi:
@@ -318,9 +313,6 @@ def test_spawn_wraps_command_with_echo_pid_and_nested_shell() -> None:
         "echo hi",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
     assert popen.pid == 123
     assert len(fake_api.exec_create_calls) == 1
@@ -328,19 +320,12 @@ def test_spawn_wraps_command_with_echo_pid_and_nested_shell() -> None:
     assert cmd == ["sh", "-lc", "echo $$; exec sh -lc 'echo hi'"]
 
 
-def test_spawn_enables_tty_when_custom_stdio_are_tty_like() -> None:
-    class _FakeTty(io.BytesIO):
-        def isatty(self) -> bool:  # noqa: D401
-            return True
-
+def test_spawn_uses_tty_protocol_when_interactive_true() -> None:
     api = FakeExecApi([b"123\n"])
     proc = DockerSubprocess(api=api, container_id="cid-123").Popen(
         "echo hi",
         cwd="/workspace",
-        env=None,
-        stdin=_FakeTty(),
-        stdout=_FakeTty(),
-        stderr=None,
+        interactive=True,
     )
     assert proc.pid == 123
     assert api.exec_create_calls[0]["tty"] is True
@@ -353,9 +338,6 @@ def test_spawn_raises_when_pid_handshake_invalid() -> None:
             "echo hi",
             cwd="/workspace",
             env=None,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
         )
 
 
@@ -372,14 +354,11 @@ def test_communicate_separates_stdout_and_stderr() -> None:
         "echo hi",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
 
     stdout, stderr = proc.communicate(timeout=1)
-    assert stdout == "out"
-    assert stderr == "err"
+    assert stdout == b"out"
+    assert stderr == b"err"
 
 
 def test_communicate_timeout_raises() -> None:
@@ -388,9 +367,6 @@ def test_communicate_timeout_raises() -> None:
         "sleep 10",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
 
     with pytest.raises(subprocess.TimeoutExpired):
@@ -409,14 +385,11 @@ def test_communicate_accepts_input_and_closes_stdin() -> None:
         "cat",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
 
-    stdout, stderr = proc.communicate(input="hello", timeout=1)
-    assert stdout == "out"
-    assert stderr == ""
+    stdout, stderr = proc.communicate(input=b"hello", timeout=1)
+    assert stdout == b"out"
+    assert stderr == b""
     assert api.last_socket is not None
     assert api.last_socket.sent == [b"hello"]
     assert api.last_socket.shutdown_called is True
@@ -435,18 +408,13 @@ def test_capture_stream_handles_and_context_manager() -> None:
         "cat",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     ) as proc:
         assert proc.stdin is not None
-        assert proc.stdout is not None
-        assert proc.stderr is not None
         proc.stdin.write(b"ping")
         proc.stdin.close()
         stdout, stderr = proc.communicate(timeout=1)
-        assert stdout == "out"
-        assert stderr == "err"
+        assert stdout == b"out"
+        assert stderr == b"err"
 
     assert proc.stdin is None
     assert proc.stdout is None
@@ -459,9 +427,6 @@ def test_signal_methods_issue_kill_exec_calls() -> None:
         "echo hi",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
 
     proc.terminate()
@@ -489,9 +454,6 @@ def test_send_signal_rejects_unsupported_signal() -> None:
         "echo hi",
         cwd="/workspace",
         env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
 
     with pytest.raises(ValueError, match="unsupported signal"):
@@ -505,56 +467,6 @@ def test_send_signal_rejects_unsupported_signal() -> None:
         and "kill " in str(call.get("cmd", ["", "", ""])[2])
     ]
     assert kill_cmds == []
-
-
-def test_communicate_supports_stderr_stdout_merge() -> None:
-    api = FakeExecApi(
-        [
-            _mux_frame(1, b"123\n"),
-            _mux_frame(1, b"out"),
-            _mux_frame(2, b"err"),
-        ],
-        inspect_sequence=[None, 0],
-    )
-    proc = DockerSubprocess(api=api, container_id="cid-123").Popen(
-        "echo hi",
-        cwd="/workspace",
-        env=None,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    stdout, stderr = proc.communicate(timeout=1)
-    assert stdout == "outerr"
-    assert stderr == ""
-
-
-def test_communicate_supports_file_like_stdio() -> None:
-    api = FakeExecApi(
-        [
-            _mux_frame(1, b"123\n"),
-            _mux_frame(1, b"out"),
-            _mux_frame(2, b"err"),
-        ],
-        inspect_sequence=[None, 0],
-    )
-    out = io.BytesIO()
-    err = io.BytesIO()
-    inp = io.BytesIO(b"hello")
-    proc = DockerSubprocess(api=api, container_id="cid-123").Popen(
-        "cat",
-        cwd="/workspace",
-        stdin=inp,
-        stdout=out,
-        stderr=err,
-    )
-    stdout, stderr = proc.communicate(timeout=1)
-    assert stdout == ""
-    assert stderr == ""
-    assert out.getvalue() == b"out"
-    assert err.getvalue() == b"err"
-    assert api.last_socket is not None
-    assert api.last_socket.sent == [b"hello"]
 
 
 def test_docker_subprocess_run_check_raises_calledprocesserror() -> None:
@@ -609,9 +521,6 @@ def test_exec_non_zero_returns_result_instead_of_raising(
             self, command: Command, **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(command, 7, "", "boom")
-
-        def Popen(self, command: Command, **kwargs: object) -> FakeDockerPopen:
-            return FakeDockerPopen()
 
     monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
 
@@ -694,9 +603,10 @@ def test_copy_to_uses_put_archive_and_chown_when_user_set(
     put_path, payload = fake_container.put_archive_calls[0]
     assert put_path == "/work"
     assert payload
-    assert fake_container.exec_run_calls == [
-        (["chown", "-R", "1000:1000", "/work/a.txt"], "0")
-    ]
+    assert len(fake_container.exec_run_calls) == 1
+    cmd, kwargs = fake_container.exec_run_calls[0]
+    assert cmd == ["chown", "-R", "1000:1000", "/work/a.txt"]
+    assert kwargs.get("user") == "0"
 
 
 def test_copy_to_directory_uses_parent_put_path_and_dest_basename(
