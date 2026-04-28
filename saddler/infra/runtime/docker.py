@@ -673,25 +673,61 @@ def _socket_chunk_iter(sock: object, chunk_size: int = 4096) -> Iterator[bytes]:
         yield chunk
 
 
-def _build_put_archive_payload(src_host: str, dest_runtime: str) -> tuple[str, bytes]:
+class _IterStream(io.RawIOBase):
+    """Adapt a bytes-chunk iterable to a readable file-like object for tarfile streaming."""
+
+    def __init__(self, iterable: Iterable[bytes]) -> None:
+        self._iter = iter(iterable)
+        self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray | memoryview) -> int:  # type: ignore[override]
+        while not self._buf:
+            try:
+                chunk = next(self._iter)
+                self._buf = chunk if isinstance(chunk, bytes) else bytes(chunk)
+            except StopIteration:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        return n
+
+
+def _check_member_path(name: str) -> None:
+    """Raise if *name* could escape the extraction root (tar-slip prevention)."""
+    p = Path(name)
+    if p.is_absolute() or ".." in p.parts:
+        raise RuntimeError(
+            f"archive member {name!r} would escape destination directory"
+        )
+
+
+def _build_put_archive_stream(
+    src_host: str, dest_runtime: str
+) -> tuple[str, io.BytesIO]:
+    dest_path = Path(dest_runtime)
+    if not dest_path.is_absolute():
+        raise ValueError(f"dest_runtime must be an absolute path: {dest_runtime!r}")
+
     src_path = Path(src_host)
     if not src_path.exists():
         raise RuntimeError(f"Source path does not exist: {src_host}")
-
-    dest_path = Path(dest_runtime)
-    tar_buffer = io.BytesIO()
 
     # Docker Engine: put_archive `path` must already exist in the container; the
     # archive root member is extracted as a child under that path. Use the parent
     # of dest + basename(dest) so e.g. copy_to(..., "/skills/docx") works after
     # `rm -rf /skills/docx` as long as `/skills` exists (same as file copy).
-    put_path = str(dest_path.parent) if str(dest_path.parent) else "."
+    put_path = str(dest_path.parent)
     arcname = dest_path.name
 
+    tar_buffer = io.BytesIO()
     with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
         tar.add(src_path, arcname=arcname)
     tar_buffer.seek(0)
-    return put_path, tar_buffer.getvalue()
+    return put_path, tar_buffer
 
 
 def _extract_archive_to_host(
@@ -701,41 +737,41 @@ def _extract_archive_to_host(
     dest_host: str,
     stat: dict[str, object] | None,
 ) -> None:
-    archive_bytes = b"".join(
-        chunk if isinstance(chunk, bytes) else bytes(chunk)
-        for chunk in archive_stream
-        if chunk
-    )
-
     src_name = (
         Path(str(stat.get("name"))) if stat and stat.get("name") else Path(src_runtime)
     )
     src_is_dir = bool(stat and stat.get("mode") and int(stat["mode"]) & 0o040000)
     dest_path = Path(dest_host)
 
-    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:*") as tar:
+    with tarfile.open(fileobj=_IterStream(archive_stream), mode="r|*") as tar:
         if src_is_dir:
             dest_path.mkdir(parents=True, exist_ok=True)
-            tar.extractall(path=dest_path)
-            return
-
-        members = tar.getmembers()
-        if not members:
-            raise RuntimeError("docker get_archive returned empty archive")
-
-        file_member = next(
-            (member for member in members if member.isfile()), members[0]
-        )
-        extracted = tar.extractfile(file_member)
-        if extracted is None:
-            raise RuntimeError("docker get_archive returned unreadable file")
-
-        if dest_path.exists() and dest_path.is_dir():
-            output_path = dest_path / src_name.name
+            for member in tar:
+                _check_member_path(member.name)
+                if member.issym():
+                    _check_member_path(member.linkname)
+                tar.extract(member, path=dest_path, set_attrs=False)
         else:
-            output_path = dest_path
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(extracted.read())
+            if dest_path.exists() and dest_path.is_dir():
+                output_path = dest_path / src_name.name
+            else:
+                output_path = dest_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+            extracted_file = False
+            for member in tar:
+                _check_member_path(member.name)
+                if member.isfile():
+                    f = tar.extractfile(member)
+                    if f is None:
+                        raise RuntimeError(
+                            "docker get_archive returned unreadable file"
+                        )
+                    with output_path.open("wb") as out:
+                        shutil.copyfileobj(f, out, length=65536)
+                    extracted_file = True
+                    break
+            if not extracted_file:
+                raise RuntimeError("docker get_archive returned empty archive")
 
 
 @register_runtime_backend("docker")
@@ -866,8 +902,8 @@ class DockerRuntimeBackend:
 
     def copy_to(self, src_host: str, dest_runtime: str) -> None:
         container = self._client().containers.get(self._require_container_id())
-        put_path, archive_payload = _build_put_archive_payload(src_host, dest_runtime)
-        ok = container.put_archive(put_path, archive_payload)
+        put_path, archive_stream = _build_put_archive_stream(src_host, dest_runtime)
+        ok = container.put_archive(put_path, archive_stream)
         if not ok:
             raise RuntimeError("docker put_archive failed")
         if self.docker_spec.user:
@@ -883,6 +919,8 @@ class DockerRuntimeBackend:
                 raise RuntimeError(error.strip() or "docker chown failed")
 
     def copy_from(self, src_runtime: str, dest_host: str) -> None:
+        if not Path(src_runtime).is_absolute():
+            raise ValueError(f"src_runtime must be an absolute path: {src_runtime!r}")
         cid = self._require_container_id()
         stream, stat = self._client().api.get_archive(cid, src_runtime)
         _extract_archive_to_host(

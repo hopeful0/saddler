@@ -62,8 +62,9 @@ class FakeContainer:
     def remove(self, *, force: bool) -> None:
         self.remove_calls.append(force)
 
-    def put_archive(self, path: str, data: bytes) -> bool:
-        self.put_archive_calls.append((path, data))
+    def put_archive(self, path: str, data: bytes | io.IOBase) -> bool:
+        raw = data if isinstance(data, bytes) else data.read()
+        self.put_archive_calls.append((path, raw))
         return self.put_archive_result
 
     def exec_run(self, cmd: list[str], **kwargs: object) -> tuple[int, bytes]:
