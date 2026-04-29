@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import errno
 import os
 import shlex
+import shutil
 import signal
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import IO, Protocol, Self
 
@@ -152,18 +156,33 @@ def exec_capture(
         out_chunks: list[bytes] = []
         err_chunks: list[bytes] = []
         streams = {out_fd: out_chunks, err_fd: err_chunks}
+        deadline = time.monotonic() + timeout if timeout is not None else None
         while streams:
-            if timeout is not None and proc.poll() is None:
-                # wait() handles timeout precisely; this loop just drains IO.
-                pass
-            readable, _, _ = select.select(list(streams), [], [], 0.05)
+            if deadline is not None and time.monotonic() >= deadline:
+                proc.kill()
+                try:
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+                raise subprocess.TimeoutExpired(
+                    cmd=normalize_shell_command(command), timeout=timeout
+                )
+            poll_timeout = (
+                min(0.05, max(0.0, deadline - time.monotonic()))
+                if deadline is not None
+                else 0.05
+            )
+            readable, _, _ = select.select(list(streams), [], [], poll_timeout)
             for stream in readable:
                 chunk = stream.read(4096)
                 if chunk:
                     streams[stream].append(chunk)
                 else:
                     streams.pop(stream, None)
-        code = proc.wait(timeout=timeout)
+        remaining = (
+            max(0.0, deadline - time.monotonic()) if deadline is not None else None
+        )
+        code = proc.wait(timeout=remaining)
         return ExecResult(
             exit_code=code,
             stdout=b"".join(out_chunks).decode(errors="replace"),
@@ -220,22 +239,38 @@ def exec_fg(
                 cols, rows = shutil.get_terminal_size(fallback=(80, 24))
                 proc.resize(rows, cols)
 
-            import shutil
-
             try:
                 tty.setraw(stdin_fd)
                 signal.signal(signal.SIGWINCH, _resize)
                 _resize()
+                _stdin_fd: int | None = stdin_fd
                 while True:
-                    watch = [stdin_fd, proc.stdout]
+                    watch: list[object] = [proc.stdout]
+                    if _stdin_fd is not None:
+                        watch.append(_stdin_fd)
                     ready, _, _ = select.select(watch, [], [], 0.05)
-                    if stdin_fd in ready:
-                        data = os.read(stdin_fd, 4096)
+                    if _stdin_fd is not None and _stdin_fd in ready:
+                        data = os.read(_stdin_fd, 4096)
                         if data:
                             proc.stdin.write(data)
                             proc.stdin.flush()
+                        else:
+                            _stdin_fd = None
+                            try:
+                                proc.stdin.close()
+                            except Exception:
+                                pass
                     if proc.stdout in ready:
-                        chunk = os.read(proc.stdout.fileno(), 4096)
+                        try:
+                            chunk = os.read(proc.stdout.fileno(), 4096)
+                        except OSError as exc:
+                            # PTY slave closes can surface as EIO on the master;
+                            # treat this as EOF when the child is exiting.
+                            if exc.errno == errno.EIO:
+                                if proc.poll() is None:
+                                    continue
+                                break
+                            raise
                         if chunk:
                             os.write(stdout_fd, chunk)
                     if proc.poll() is not None:
