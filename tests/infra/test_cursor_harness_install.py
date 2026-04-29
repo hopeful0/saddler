@@ -301,7 +301,7 @@ def test_list_rules_and_skills_returns_installed_names(tmp_path: Path) -> None:
     assert harness.list_skills(runtime) == ["demo"]
 
 
-def test_tui_and_acp_use_unified_exec_error_behavior(tmp_path: Path) -> None:
+def test_tui_and_acp_return_handles_when_process_exits_nonzero(tmp_path: Path) -> None:
     runtime = FakeRuntimeBackend(workdir_root=tmp_path / "runtime")
     ok_harness = CursorHarness.from_spec(
         AgentSpec(
@@ -313,8 +313,8 @@ def test_tui_and_acp_use_unified_exec_error_behavior(tmp_path: Path) -> None:
             harness_spec={"binary": "true"},
         )
     )
-    ok_harness.tui(runtime)
-    ok_harness.acp(runtime)
+    ok_harness.tui(runtime, tty=False)
+    ok_harness.acp(runtime, tty=False)
 
     failed_harness = CursorHarness.from_spec(
         AgentSpec(
@@ -326,7 +326,9 @@ def test_tui_and_acp_use_unified_exec_error_behavior(tmp_path: Path) -> None:
             harness_spec={"binary": "false"},
         )
     )
-    with pytest.raises(RuntimeError):
-        failed_harness.tui(runtime)
-    with pytest.raises(RuntimeError):
-        failed_harness.acp(runtime)
+    failed_tui = failed_harness.tui(runtime, tty=False)
+    failed_acp = failed_harness.acp(runtime, tty=False)
+    assert failed_tui.stdin is not None
+    assert failed_tui.stdout is not None
+    assert failed_acp.stdin is not None
+    assert failed_acp.stdout is not None
