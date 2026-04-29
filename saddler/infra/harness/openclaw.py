@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from ...agent.harness import Harness, register_harness_adapter
 from ...agent.model import AgentSpec, RuleSpec, SkillSpec
-from ...runtime.backend import RuntimeBackend, exec_bg, exec_capture, exec_fg
+from ...runtime.backend import ProcessHandle, RuntimeBackend, exec_bg, exec_capture
 from .utils import (
     fetch_and_copy_skill_dir,
     fetch_rule_content,
@@ -90,13 +90,29 @@ class OpenClawHarness(Harness):
         )
         return [line for line in result.stdout.splitlines() if line]
 
-    def tui(self, runtime: RuntimeBackend) -> None:
+    def tui(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
         self._ensure_gateway(runtime)
-        exec_fg(runtime, [self.config.binary, "tui"], cwd=self.spec.workdir)
+        proc = runtime.exec(
+            [self.config.binary, "tui"],
+            cwd=self.spec.workdir,
+            stdin=True,
+            stdout=True,
+            tty=tty,
+        )
+        assert proc is not None
+        return proc
 
-    def acp(self, runtime: RuntimeBackend) -> None:
+    def acp(self, runtime: RuntimeBackend, *, tty: bool = False) -> ProcessHandle:
         self._ensure_gateway(runtime)
-        exec_fg(runtime, [self.config.binary, "acp"], cwd=self.spec.workdir)
+        proc = runtime.exec(
+            [self.config.binary, "acp"],
+            cwd=self.spec.workdir,
+            stdin=True,
+            stdout=True,
+            tty=tty,
+        )
+        assert proc is not None
+        return proc
 
     def _ensure_gateway(self, runtime: RuntimeBackend) -> None:
         status_cmd = [self.config.binary, "gateway", "status", "--require-rpc"]
