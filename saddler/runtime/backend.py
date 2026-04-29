@@ -88,7 +88,6 @@ class RuntimeBackend(Protocol):
         stderr: bool = False,
         tty: bool = False,
         detach: bool = False,
-        timeout: float | None = None,
     ) -> ProcessHandle | None:
         """Run a shell command and return process handle.
 
@@ -146,7 +145,6 @@ def exec_capture(
         stderr=True,
         tty=False,
         detach=False,
-        timeout=timeout,
     ) as proc:
         assert proc is not None
         out_fd = proc.stdout
@@ -273,8 +271,8 @@ def exec_fg(
                             raise
                         if chunk:
                             os.write(stdout_fd, chunk)
-                    if proc.poll() is not None:
-                        break
+                        else:
+                            break  # PTY EOF — slave side closed
             finally:
                 termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old)
                 signal.signal(signal.SIGWINCH, old_winch)

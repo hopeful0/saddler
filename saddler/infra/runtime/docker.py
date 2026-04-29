@@ -418,7 +418,7 @@ class DockerSubprocess:
         wrapper = self._build_shell_wrapper(cmd_str)
         payload = self._api.exec_create(
             container=self._container_id,
-            cmd=["sh", "-lc", wrapper],
+            cmd=["sh", "-c", wrapper],
             workdir=cwd,
             environment=env or None,
             tty=interactive,
@@ -1002,9 +1002,7 @@ class DockerRuntimeBackend:
         stderr: bool = False,
         tty: bool = False,
         detach: bool = False,
-        timeout: float | None = None,
     ) -> ProcessHandle | None:
-        _ = timeout
         if detach:
             container = self._client().containers.get(self._require_container_id())
             container.exec_run(

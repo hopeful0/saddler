@@ -53,7 +53,6 @@ class LocalRuntimeBackend:
         stderr: bool = False,
         tty: bool = False,
         detach: bool = False,
-        timeout: float | None = None,
     ) -> ProcessHandle | None:
         cmd_str = normalize_shell_command(command)
         merged_env = {**os.environ, **self.spec.env, **(env or {})}
@@ -81,7 +80,6 @@ class LocalRuntimeBackend:
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            timeout=timeout,
         )
 
     def copy_to(self, src_host: str, dest_runtime: str) -> None:
@@ -114,9 +112,7 @@ class LocalPipeHandle:
         stdin: bool,
         stdout: bool,
         stderr: bool,
-        timeout: float | None,
     ) -> None:
-        self._timeout = timeout
         self._proc = subprocess.Popen(
             command,
             cwd=cwd,
@@ -134,9 +130,7 @@ class LocalPipeHandle:
         return self._proc.returncode
 
     def wait(self, timeout: float | None = None) -> int:
-        return self._proc.wait(
-            timeout=timeout if timeout is not None else self._timeout
-        )
+        return self._proc.wait(timeout=timeout)
 
     def poll(self) -> int | None:
         return self._proc.poll()
@@ -156,9 +150,7 @@ class LocalPipeHandle:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self.poll() is None:
             self.terminate()
-        for stream in (self.stdin, self.stdout, self.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
+        self._proc.__exit__(exc_type, exc, tb)
 
 
 class LocalPtyHandle:
@@ -208,3 +200,4 @@ class LocalPtyHandle:
             self.terminate()
         if not self._master.closed:
             self._master.close()
+        self._proc.__exit__(exc_type, exc, tb)

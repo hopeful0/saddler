@@ -358,7 +358,7 @@ def test_spawn_wraps_command_with_echo_pid_and_nested_shell() -> None:
     assert popen.pid == 123
     assert len(fake_api.exec_create_calls) == 1
     cmd = fake_api.exec_create_calls[0]["cmd"]
-    assert cmd == ["sh", "-lc", "echo $$; exec sh -lc 'echo hi'"]
+    assert cmd == ["sh", "-c", "echo $$; exec sh -lc 'echo hi'"]
 
 
 def test_spawn_uses_tty_protocol_when_interactive_true() -> None:
