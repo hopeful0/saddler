@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import uuid
 from collections.abc import Iterable, Iterator
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field, JsonValue
 
 from ...runtime.backend import (
     Command,
-    ExecResult,
+    ProcessHandle,
     normalize_shell_command,
     register_runtime_backend,
 )
@@ -498,6 +499,128 @@ class DockerSubprocess:
         return f"echo $$; exec sh -lc {shlex.quote(command)}"
 
 
+class _PipeReader(io.RawIOBase):
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self._closed = False
+
+    def fileno(self) -> int:
+        return self._fd
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+        if self._closed:
+            return b""
+        if size <= 0:
+            size = 65536
+        return os.read(self._fd, size)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            os.close(self._fd)
+
+
+class DockerTtyHandle:
+    def __init__(self, proc: DockerPopen, api: APIClient, exec_id: str) -> None:
+        self._proc = proc
+        self._api = api
+        self._exec_id = exec_id
+        self.stdin = proc.stdin
+        self.stdout = proc._socket  # noqa: SLF001
+        self.stderr = None
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._proc.wait(timeout=timeout)
+
+    def poll(self) -> int | None:
+        return self._proc.poll()
+
+    def terminate(self) -> None:
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+    def resize(self, rows: int, cols: int) -> None:
+        self._api.exec_resize(self._exec_id, height=rows, width=cols)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._proc.close()
+
+
+class DockerMuxHandle:
+    def __init__(self, proc: DockerPopen) -> None:
+        self._proc = proc
+        self.stdin = proc.stdin
+        self._sock = proc._socket  # noqa: SLF001
+        out_r, out_w = os.pipe()
+        err_r, err_w = os.pipe()
+        self._out_w = out_w
+        self._err_w = err_w
+        self.stdout = _PipeReader(out_r)
+        self.stderr = _PipeReader(err_r)
+        self._pump_done = threading.Event()
+        self._pump = threading.Thread(target=self._pump_mux, daemon=True)
+        self._pump.start()
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def _pump_mux(self) -> None:
+        try:
+            while True:
+                frame = _read_mux_frame(self._sock, None)
+                if frame is None:
+                    break
+                stream_type, payload = frame
+                if stream_type == 1:
+                    os.write(self._out_w, payload)
+                elif stream_type == 2:
+                    os.write(self._err_w, payload)
+        finally:
+            for fd in (self._out_w, self._err_w):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            self._pump_done.set()
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._proc.wait(timeout=timeout)
+
+    def poll(self) -> int | None:
+        return self._proc.poll()
+
+    def terminate(self) -> None:
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+    def resize(self, rows: int, cols: int) -> None:
+        _ = (rows, cols)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._pump.join(timeout=0.5)
+        self._proc.close()
+        self.stdout.close()
+        self.stderr.close()
+
+
 # ---------------------------------------------------------------------------
 # Module-level I/O helpers used by DockerSubprocess
 # ---------------------------------------------------------------------------
@@ -873,43 +996,44 @@ class DockerRuntimeBackend:
         command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
+        *,
+        stdin: bool = False,
+        stdout: bool = False,
+        stderr: bool = False,
+        tty: bool = False,
+        detach: bool = False,
         timeout: float | None = None,
-    ) -> ExecResult:
-        completed = self._docker_subprocess().run(
-            command=command,
+    ) -> ProcessHandle | None:
+        _ = timeout
+        if detach:
+            container = self._client().containers.get(self._require_container_id())
+            container.exec_run(
+                ["sh", "-lc", normalize_shell_command(command)],
+                detach=True,
+                workdir=cwd,
+                environment=env or None,
+                user=self.docker_spec.user or "",
+            )
+            return None
+        popen = self._docker_subprocess().Popen(
+            command,
             cwd=cwd,
             env=env,
-            timeout=timeout,
-            check=False,
+            interactive=tty,
         )
-        return ExecResult(
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
-
-    def exec_bg(
-        self,
-        command: Command,
-        cwd: str,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        container = self._client().containers.get(self._require_container_id())
-        container.exec_run(
-            ["sh", "-lc", normalize_shell_command(command)],
-            detach=True,
-            workdir=cwd,
-            environment=env or None,
-            user=self.docker_spec.user or "",
-        )
-
-    def exec_fg(
-        self,
-        command: Command,
-        cwd: str,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        self._docker_subprocess().run_fg(command, cwd=cwd, env=env)
+        if tty:
+            return DockerTtyHandle(popen, self._client().api, popen._exec_id)  # noqa: SLF001
+        handle = DockerMuxHandle(popen)
+        if not stdout:
+            handle.stdout.close()
+            handle.stdout = None  # type: ignore[assignment]
+        if not stderr:
+            handle.stderr.close()
+            handle.stderr = None  # type: ignore[assignment]
+        if not stdin and handle.stdin is not None:
+            handle.stdin.close()
+            handle.stdin = None  # type: ignore[assignment]
+        return handle
 
     def copy_to(self, src_host: str, dest_runtime: str) -> None:
         container = self._client().containers.get(self._require_container_id())

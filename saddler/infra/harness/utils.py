@@ -7,11 +7,11 @@ from pathlib import Path
 from ...agent.model import RuleSpec, SkillSpec
 from ...resource import parse_source
 from ...resource.model import SourceSpec
-from ...runtime.backend import Command, RuntimeBackend
+from ...runtime.backend import Command, RuntimeBackend, exec_capture
 
 
 def require_ok_exec(runtime: RuntimeBackend, command: Command, cwd: str) -> None:
-    result = runtime.exec(command, cwd)
+    result = exec_capture(runtime, command, cwd)
     if result.exit_code != 0:
         raise RuntimeError(
             (result.stderr or result.stdout or "").strip() or "runtime exec failed"
@@ -57,7 +57,7 @@ def fetch_and_copy_rule(
 def list_managed_sections(
     runtime: RuntimeBackend, file_path: str, cwd: str
 ) -> list[str]:
-    result = runtime.exec(["cat", file_path], cwd)
+    result = exec_capture(runtime, ["cat", file_path], cwd)
     if result.exit_code != 0:
         return []
     return re.findall(r"<!-- saddler:(.+?):start -->", result.stdout)
@@ -81,7 +81,7 @@ def upsert_managed_section(
     end_marker = f"<!-- saddler:{section_name}:end -->"
     block = f"{start_marker}\n{content.strip()}\n{end_marker}"
 
-    result = runtime.exec(["cat", file_path], cwd)
+    result = exec_capture(runtime, ["cat", file_path], cwd)
     existing = result.stdout if result.exit_code == 0 else ""
 
     if start_marker in existing:

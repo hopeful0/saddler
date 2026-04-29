@@ -40,7 +40,7 @@ CLI (cli.py) → API (api/) → App (app/) → Domain ← Infra (infra/)
 
 ## Key Design Patterns
 
-- **Protocol-based interfaces**: `RuntimeBackend`, `Harness`, `Fetcher`, `Repository` are all `typing.Protocol`. Implement the protocol and register via entry point — no base class needed.
+- **Protocol-based interfaces**: `RuntimeBackend`, `Harness`, `Fetcher`, `Repository` are all `typing.Protocol`. Runtime command execution now uses unified `RuntimeBackend.exec(...) -> ProcessHandle | None`, with behavior helpers `exec_capture` / `exec_fg` / `exec_bg` in `saddler.runtime.backend`.
 - **Registry + entry points**: Adapters are discovered lazily on first use. `@register_harness_adapter("name")` / `@register_runtime_backend("name")` decorators handle registration.
 - **`Repository.mutate(id, fn)`**: Atomic in-place update via callback under filelock — always prefer over fetch-then-update.
 - **Discriminated unions**: Mount types use Pydantic discriminators (`type` field). Always add a `Literal` type field when extending mount or spec variants.
