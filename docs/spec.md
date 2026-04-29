@@ -131,7 +131,7 @@ CLI → API → App → Domain ← Infra
 
 **runtime 复用**：runtime 独立于 agent 存在，多个 agent 可共用同一 runtime（`used_by` 追踪引用）。storage 同理（`mounted_by` 追踪）。
 
-**Protocol + Registry**：RuntimeBackend、Harness、Fetcher 均为 `typing.Protocol`，通过 entry point group 注册。添加新 harness 或 runtime backend 只需实现协议并注册，无需修改核心代码。
+**Protocol + Registry**：RuntimeBackend、Harness、Fetcher 均为 `typing.Protocol`，通过 entry point group 注册。运行时执行接口统一为 `RuntimeBackend.exec(...) -> ProcessHandle | None`，并由 `exec_capture` / `exec_fg` / `exec_bg` utility 组合出捕获、前台与后台行为；添加新 harness 或 runtime backend 只需实现协议并注册，无需修改核心代码。
 
 **持久化**：每条资源对应 `~/.saddler/{storages,runtimes,agents}/<id>.json`，`Repository.mutate()` 在 filelock 内原子更新，避免并发覆盖。
 

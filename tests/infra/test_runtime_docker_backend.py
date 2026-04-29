@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import tarfile
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from saddler.infra.runtime.docker import (
     DockerRuntimeSpec,
     DockerRuntimeState,
 )
-from saddler.runtime.backend import Command
+from saddler.runtime.backend import exec_bg, exec_capture, exec_fg
 from saddler.runtime.model import RuntimeSpec
 
 
@@ -204,35 +205,55 @@ class FakeDockerPopen:
         return self.exit_code
 
 
-def test_exec_and_exec_fg_delegate_to_docker_subprocess(
+def test_exec_capture_and_exec_fg_work_with_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _make_backend()
-    run_calls: list[dict[str, object]] = []
-    run_fg_calls: list[dict[str, object]] = []
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    monkeypatch.setattr("sys.stderr", io.StringIO())
 
-    class FakeSubprocess:
-        def run(
-            self, command: Command, **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
-            run_calls.append({"command": command, **kwargs})
-            return subprocess.CompletedProcess(command, 0, "ok", "")
+    class FakeHandle:
+        def __init__(self, out: bytes = b"ok", err: bytes = b"", code: int = 0) -> None:
+            self.returncode: int | None = code
+            self.stdin = io.BytesIO()
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+            os.write(out_w, out)
+            os.write(err_w, err)
+            os.close(out_w)
+            os.close(err_w)
+            self.stdout = os.fdopen(out_r, "rb", buffering=0)
+            self.stderr = os.fdopen(err_r, "rb", buffering=0)
 
-        def run_fg(self, command: Command, **kwargs: object) -> None:
-            run_fg_calls.append({"command": command, **kwargs})
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            return int(self.returncode or 0)
 
-    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
+        def poll(self) -> int | None:
+            return self.returncode
 
-    backend.exec("echo ok", cwd="/w")
-    backend.exec_fg("echo ok", cwd="/w")
+        def terminate(self) -> None:
+            return
 
-    assert len(run_calls) == 1
-    assert run_calls[0]["command"] == "echo ok"
-    assert run_calls[0]["cwd"] == "/w"
-    assert run_calls[0]["check"] is False
-    assert len(run_fg_calls) == 1
-    assert run_fg_calls[0]["command"] == "echo ok"
-    assert run_fg_calls[0]["cwd"] == "/w"
+        def kill(self) -> None:
+            return
+
+        def resize(self, rows: int, cols: int) -> None:
+            _ = (rows, cols)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            self.stdout.close()
+            self.stderr.close()
+
+    monkeypatch.setattr(backend, "exec", lambda *args, **kwargs: FakeHandle())
+    result = exec_capture(backend, "echo ok", cwd="/w")
+    assert result.exit_code == 0
+    assert result.stdout == "ok"
+    exec_fg(backend, "echo ok", cwd="/w")
 
 
 def test_exec_bg_uses_exec_run_with_detach(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,7 +264,7 @@ def test_exec_bg_uses_exec_run_with_detach(monkeypatch: pytest.MonkeyPatch) -> N
     fake_client = SimpleNamespace(containers=fake_containers)
     monkeypatch.setattr(backend, "_client", lambda: fake_client)
 
-    backend.exec_bg("sleep 10", cwd="/workspace")
+    exec_bg(backend, "sleep 10", cwd="/workspace")
 
     assert len(fake_container.exec_run_calls) == 1
     cmd, kwargs = fake_container.exec_run_calls[0]
@@ -337,7 +358,7 @@ def test_spawn_wraps_command_with_echo_pid_and_nested_shell() -> None:
     assert popen.pid == 123
     assert len(fake_api.exec_create_calls) == 1
     cmd = fake_api.exec_create_calls[0]["cmd"]
-    assert cmd == ["sh", "-lc", "echo $$; exec sh -lc 'echo hi'"]
+    assert cmd == ["sh", "-c", "echo $$; exec sh -lc 'echo hi'"]
 
 
 def test_spawn_uses_tty_protocol_when_interactive_true() -> None:
@@ -536,15 +557,49 @@ def test_exec_non_zero_returns_result_instead_of_raising(
 ) -> None:
     backend = _make_backend()
 
-    class FakeSubprocess:
-        def run(
-            self, command: Command, **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(command, 7, "", "boom")
+    class FakeHandle:
+        def __init__(self) -> None:
+            self.stdin = None
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+            os.write(err_w, b"boom")
+            os.close(out_w)
+            os.close(err_w)
+            self.stdout = os.fdopen(out_r, "rb", buffering=0)
+            self.stderr = os.fdopen(err_r, "rb", buffering=0)
+            self.returncode: int | None = 7
 
-    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            return 7
 
-    result = backend.exec("exit 7", cwd="/workspace")
+        def poll(self) -> int | None:
+            return 7
+
+        def terminate(self) -> None:
+            return
+
+        def kill(self) -> None:
+            return
+
+        def resize(self, rows: int, cols: int) -> None:
+            _ = (rows, cols)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            self.stdout.close()
+            self.stderr.close()
+            return
+
+    monkeypatch.setattr(
+        backend,
+        "exec",
+        lambda *args, **kwargs: FakeHandle(),
+    )
+
+    result = exec_capture(backend, "exit 7", cwd="/workspace")
 
     assert result.exit_code == 7
     assert result.stderr == "boom"
@@ -567,14 +622,48 @@ def test_exec_fg_raises_runtime_error_on_non_zero_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _make_backend()
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    monkeypatch.setattr("sys.stderr", io.StringIO())
 
-    class FakeSubprocess:
-        def run_fg(self, command: Command, **kwargs: object) -> None:
-            raise RuntimeError("docker exec failed with exit code 7")
+    class FakeHandle:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+            os.close(out_w)
+            os.close(err_w)
+            self.stdout = os.fdopen(out_r, "rb", buffering=0)
+            self.stderr = os.fdopen(err_r, "rb", buffering=0)
+            self.returncode: int | None = 7
 
-    monkeypatch.setattr(backend, "_docker_subprocess", lambda: FakeSubprocess())
+        def wait(self, timeout: float | None = None) -> int:
+            _ = timeout
+            return 7
+
+        def poll(self) -> int | None:
+            return 7
+
+        def terminate(self) -> None:
+            return
+
+        def kill(self) -> None:
+            return
+
+        def resize(self, rows: int, cols: int) -> None:
+            _ = (rows, cols)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            self.stdout.close()
+            self.stderr.close()
+            return
+
+    monkeypatch.setattr(backend, "exec", lambda *args, **kwargs: FakeHandle())
     with pytest.raises(RuntimeError, match="exit code 7"):
-        backend.exec_fg("exit 7", cwd="/workspace")
+        exec_fg(backend, "exit 7", cwd="/workspace")
 
 
 class FakeArchiveApi:

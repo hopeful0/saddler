@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from ...agent.harness import Harness, register_harness_adapter
 from ...agent.model import AgentSpec, RuleSpec, SkillSpec
-from ...runtime.backend import RuntimeBackend
+from ...runtime.backend import RuntimeBackend, exec_capture, exec_fg
 from .utils import (
     fetch_and_copy_skill_dir,
     fetch_rule_content,
@@ -47,7 +47,7 @@ class CodexHarness(Harness):
         return cls(spec=spec, config=config)
 
     def is_installed(self, runtime: RuntimeBackend) -> bool:
-        result = runtime.exec(["which", self.config.binary], self.spec.workdir)
+        result = exec_capture(runtime, ["which", self.config.binary], self.spec.workdir)
         return result.exit_code == 0
 
     def install(self, runtime: RuntimeBackend) -> None:
@@ -83,20 +83,21 @@ class CodexHarness(Harness):
 
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         cfg = _codex_config_dir(self.spec.workdir)
-        result = runtime.exec(
+        result = exec_capture(
+            runtime,
             f"ls -1 {cfg}/prompts 2>/dev/null || true",
             self.spec.workdir,
         )
         return [line for line in result.stdout.splitlines() if line]
 
     def tui(self, runtime: RuntimeBackend) -> None:
-        runtime.exec_fg([self.config.binary], cwd=self.spec.workdir)
+        exec_fg(runtime, [self.config.binary], cwd=self.spec.workdir)
 
     def acp(self, runtime: RuntimeBackend) -> None:
-        if runtime.exec("which codex-acp", self.spec.workdir).exit_code != 0:
+        if exec_capture(runtime, "which codex-acp", self.spec.workdir).exit_code != 0:
             require_ok_exec(
                 runtime,
                 "npm install -g @zed-industries/codex-acp",
                 self.spec.workdir,
             )
-        runtime.exec_fg("codex-acp", cwd=self.spec.workdir)
+        exec_fg(runtime, "codex-acp", cwd=self.spec.workdir)

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from ...agent.harness import Harness, register_harness_adapter
 from ...agent.model import AgentSpec, RuleSpec, SkillSpec
-from ...runtime.backend import RuntimeBackend
+from ...runtime.backend import RuntimeBackend, exec_bg, exec_capture, exec_fg
 from .utils import (
     fetch_and_copy_skill_dir,
     fetch_rule_content,
@@ -46,7 +46,9 @@ class OpenClawHarness(Harness):
         return cls(spec=spec, config=config)
 
     def is_installed(self, runtime: RuntimeBackend) -> bool:
-        result = runtime.exec([self.config.binary, "--version"], self.spec.workdir)
+        result = exec_capture(
+            runtime, [self.config.binary, "--version"], self.spec.workdir
+        )
         return result.exit_code == 0 and "OpenClaw" in result.stdout
 
     def install(self, runtime: RuntimeBackend) -> None:
@@ -81,7 +83,8 @@ class OpenClawHarness(Harness):
 
     def list_skills(self, runtime: RuntimeBackend) -> list[str]:
         skills_dir = str(PurePosixPath(self.spec.workdir) / "skills")
-        result = runtime.exec(
+        result = exec_capture(
+            runtime,
             f"ls -1 {skills_dir} 2>/dev/null || true",
             self.spec.workdir,
         )
@@ -89,22 +92,24 @@ class OpenClawHarness(Harness):
 
     def tui(self, runtime: RuntimeBackend) -> None:
         self._ensure_gateway(runtime)
-        runtime.exec_fg([self.config.binary, "tui"], cwd=self.spec.workdir)
+        exec_fg(runtime, [self.config.binary, "tui"], cwd=self.spec.workdir)
 
     def acp(self, runtime: RuntimeBackend) -> None:
         self._ensure_gateway(runtime)
-        runtime.exec_fg([self.config.binary, "acp"], cwd=self.spec.workdir)
+        exec_fg(runtime, [self.config.binary, "acp"], cwd=self.spec.workdir)
 
     def _ensure_gateway(self, runtime: RuntimeBackend) -> None:
         status_cmd = [self.config.binary, "gateway", "status", "--require-rpc"]
-        if runtime.exec(status_cmd, self.spec.workdir).exit_code == 0:
+        if exec_capture(runtime, status_cmd, self.spec.workdir).exit_code == 0:
             return
-        runtime.exec_bg(
-            [self.config.binary, "gateway", "--allow-unconfigured"], self.spec.workdir
+        exec_bg(
+            runtime,
+            [self.config.binary, "gateway", "--allow-unconfigured"],
+            self.spec.workdir,
         )
         deadline = time.monotonic() + self.config.gateway_wait_timeout_seconds
         while time.monotonic() < deadline:
-            if runtime.exec(status_cmd, self.spec.workdir).exit_code == 0:
+            if exec_capture(runtime, status_cmd, self.spec.workdir).exit_code == 0:
                 return
             time.sleep(self.config.gateway_poll_interval_seconds)
         raise RuntimeError(

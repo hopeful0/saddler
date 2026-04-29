@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import os
+import pty
 import shutil
+import struct
 import subprocess
+import termios
+import fcntl
 from pathlib import Path
-from typing import Self
+from typing import IO, Self
 
 from pydantic import JsonValue
 
 from ...runtime.backend import (
     Command,
-    ExecResult,
+    ProcessHandle,
     normalize_shell_command,
     register_runtime_backend,
 )
@@ -43,58 +47,40 @@ class LocalRuntimeBackend:
         command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
-        timeout: float | None = None,
-    ) -> ExecResult:
+        *,
+        stdin: bool = False,
+        stdout: bool = False,
+        stderr: bool = False,
+        tty: bool = False,
+        detach: bool = False,
+    ) -> ProcessHandle | None:
         cmd_str = normalize_shell_command(command)
         merged_env = {**os.environ, **self.spec.env, **(env or {})}
-        proc = subprocess.run(
-            ["sh", "-lc", cmd_str],
+        if detach:
+            subprocess.Popen(
+                ["sh", "-lc", cmd_str],
+                cwd=cwd,
+                env=merged_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return None
+        if tty:
+            return LocalPtyHandle(
+                command=["sh", "-lc", cmd_str],
+                cwd=cwd,
+                env=merged_env,
+            )
+        return LocalPipeHandle(
+            command=["sh", "-lc", cmd_str],
             cwd=cwd,
             env=merged_env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
         )
-        return ExecResult(
-            exit_code=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-        )
-
-    def exec_bg(
-        self,
-        command: Command,
-        cwd: str,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        cmd_str = normalize_shell_command(command)
-        merged_env = {**os.environ, **self.spec.env, **(env or {})}
-        subprocess.Popen(
-            ["sh", "-lc", cmd_str],
-            cwd=cwd,
-            env=merged_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-    def exec_fg(
-        self,
-        command: Command,
-        cwd: str,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        cmd_str = normalize_shell_command(command)
-        merged_env = {**os.environ, **self.spec.env, **(env or {})}
-        proc = subprocess.run(
-            ["sh", "-lc", cmd_str],
-            cwd=cwd,
-            env=merged_env,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"local exec failed with exit code {proc.returncode}")
 
     def copy_to(self, src_host: str, dest_runtime: str) -> None:
         src = Path(src_host)
@@ -114,3 +100,137 @@ class LocalRuntimeBackend:
     @classmethod
     def load_state(cls, spec: RuntimeSpec, _state: JsonValue | None) -> Self:
         return cls(spec=spec)
+
+
+class LocalPipeHandle:
+    def __init__(
+        self,
+        *,
+        command: list[str],
+        cwd: str,
+        env: dict[str, str],
+        stdin: bool,
+        stdout: bool,
+        stderr: bool,
+    ) -> None:
+        self._proc = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE if stdin else None,
+            stdout=subprocess.PIPE if stdout else None,
+            stderr=subprocess.PIPE if stderr else None,
+        )
+        self.stdin = self._proc.stdin
+        self.stdout = self._proc.stdout
+        self.stderr = self._proc.stderr
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._proc.wait(timeout=timeout)
+
+    def poll(self) -> int | None:
+        return self._proc.poll()
+
+    def terminate(self) -> None:
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+    def resize(self, rows: int, cols: int) -> None:
+        _ = (rows, cols)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        # Ensure we never block indefinitely in context-manager cleanup.
+        # `subprocess.Popen.__exit__()` calls `wait()` without a timeout, which
+        # can hang if the child ignores SIGTERM.
+        if self.poll() is None:
+            self.terminate()
+            try:
+                self._proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                self.kill()
+                try:
+                    # Last bounded wait; if this still doesn't exit, we still
+                    # must not hang the caller.
+                    self._proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        for f in (self.stdin, self.stdout, self.stderr):
+            if f is None:
+                continue
+            try:
+                if not f.closed:
+                    f.close()
+            except Exception:
+                pass
+
+
+class LocalPtyHandle:
+    def __init__(self, *, command: list[str], cwd: str, env: dict[str, str]) -> None:
+        master_fd, slave_fd = pty.openpty()
+        self._master_fd = master_fd
+        self._master: IO[bytes] = os.fdopen(master_fd, "r+b", buffering=0)
+        self._proc = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        self.stdin = self._master
+        self.stdout = self._master
+        self.stderr = None
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._proc.wait(timeout=timeout)
+
+    def poll(self) -> int | None:
+        return self._proc.poll()
+
+    def terminate(self) -> None:
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+    def resize(self, rows: int, cols: int) -> None:
+        winsz = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsz)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        # Ensure we never block indefinitely in context-manager cleanup.
+        if self.poll() is None:
+            self.terminate()
+            try:
+                self._proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                self.kill()
+                try:
+                    self._proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        if not self._master.closed:
+            try:
+                self._master.close()
+            except Exception:
+                pass

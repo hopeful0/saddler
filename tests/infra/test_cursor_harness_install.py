@@ -11,7 +11,7 @@ from saddler.infra.harness.cursor import (
     CursorHarness,
     _ensure_rule_frontmatter,
 )
-from saddler.runtime.backend import Command, ExecResult, RuntimeBackend
+from saddler.runtime.backend import Command, ProcessHandle, RuntimeBackend
 
 # Ensure infra fetchers are registered.
 from saddler import infra as _infra  # noqa: F401
@@ -73,38 +73,36 @@ class FakeRuntimeBackend(RuntimeBackend):
         command: Command,
         cwd: str,
         env: dict[str, str] | None = None,
+        *,
+        stdin: bool = False,
+        stdout: bool = False,
+        stderr: bool = False,
+        tty: bool = False,
+        detach: bool = False,
         timeout: float | None = None,
-    ) -> ExecResult:
+    ) -> ProcessHandle | None:
         host_cwd = self._resolve_cwd(cwd)
         host_cwd.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
+        if detach:
+            subprocess.Popen(
+                self._rewrite_sh_script(command),
+                cwd=str(host_cwd),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return None
+        proc = subprocess.Popen(
             self._rewrite_sh_script(command),
             cwd=str(host_cwd),
             env=env,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
+            stdin=subprocess.PIPE if stdin else None,
+            stdout=subprocess.PIPE if stdout else None,
+            stderr=subprocess.PIPE if stderr else None,
         )
-        return ExecResult(proc.returncode, proc.stdout, proc.stderr)
-
-    def exec_bg(
-        self,
-        command: Command,
-        cwd: str,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        raise NotImplementedError
-
-    def exec_fg(
-        self,
-        command: Command,
-        cwd: str,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        result = self.exec(command, cwd, env=env)
-        if result.exit_code != 0:
-            raise RuntimeError(result.stderr or result.stdout or "exec_fg failed")
+        return proc  # type: ignore[return-value]
 
     def copy_to(self, src_host: str, dest_runtime: str) -> None:
         dest = self._resolve_dest(dest_runtime)
