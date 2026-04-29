@@ -1,6 +1,6 @@
 from ..agent.model import Agent, AgentSpec
 from ..agent.service import AgentService
-from ..runtime.backend import RuntimeBackend
+from ..runtime.backend import RuntimeBackend, pump_fg
 from ..runtime.model import Runtime
 from ..shared.repository import Repository
 from .errors import NotFoundError
@@ -64,7 +64,7 @@ class AgentUseCase:
     def get_agent(self, ref: str) -> Agent:
         return _resolver.resolve(self._repo.list(), ref)
 
-    def tui(self, ref: str) -> None:
+    def tui(self, ref: str, *, tty: bool) -> None:
         agent = _resolver.resolve(self._repo.list(), ref)
         runtime = self._runtime_repo.get(agent.runtime)
         if runtime is None:
@@ -72,9 +72,10 @@ class AgentUseCase:
                 f"Runtime {agent.runtime!r} not found for agent {agent.id!r}"
             )
         harness = self._service.get_harness(agent.id)
-        harness.tui(self._get_backend(runtime))
+        handle = harness.tui(self._get_backend(runtime), tty=tty)
+        pump_fg(handle, tty=tty)
 
-    def acp(self, ref: str) -> None:
+    def acp(self, ref: str, *, tty: bool) -> None:
         agent = _resolver.resolve(self._repo.list(), ref)
         runtime = self._runtime_repo.get(agent.runtime)
         if runtime is None:
@@ -82,7 +83,8 @@ class AgentUseCase:
                 f"Runtime {agent.runtime!r} not found for agent {agent.id!r}"
             )
         harness = self._service.get_harness(agent.id)
-        harness.acp(self._get_backend(runtime))
+        handle = harness.acp(self._get_backend(runtime), tty=tty)
+        pump_fg(handle, tty=tty)
 
     # ------------------------------------------------------------------
 

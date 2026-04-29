@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Protocol, Self
 
 from .model import AgentSpec, RuleSpec, SkillSpec
-from ..runtime.backend import RuntimeBackend
+from ..runtime.backend import ProcessHandle, RuntimeBackend
 from ..shared.registry import Registry
 
 
@@ -23,9 +23,9 @@ class Harness(Protocol):
 
     def list_rules(self, runtime: RuntimeBackend) -> list[str]: ...
 
-    def tui(self, runtime: RuntimeBackend) -> None: ...
+    def tui(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle: ...
 
-    def acp(self, runtime: RuntimeBackend) -> None: ...
+    def acp(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle: ...
 
     @classmethod
     def from_spec(cls, spec: AgentSpec) -> Self: ...

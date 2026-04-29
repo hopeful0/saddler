@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from ...agent.harness import Harness, register_harness_adapter
 from ...agent.model import AgentSpec, RuleSpec, SkillSpec
-from ...runtime.backend import RuntimeBackend, exec_capture, exec_fg
+from ...runtime.backend import ProcessHandle, RuntimeBackend, exec_capture
 from .utils import (
     fetch_and_copy_skill_dir,
     fetch_rule_content,
@@ -90,14 +90,28 @@ class CodexHarness(Harness):
         )
         return [line for line in result.stdout.splitlines() if line]
 
-    def tui(self, runtime: RuntimeBackend) -> None:
-        exec_fg(runtime, [self.config.binary], cwd=self.spec.workdir)
+    def tui(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
+        proc = runtime.exec(
+            [self.config.binary],
+            cwd=self.spec.workdir,
+            stdin=True,
+            stdout=True,
+            tty=tty,
+        )
+        return proc
 
-    def acp(self, runtime: RuntimeBackend) -> None:
+    def acp(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
         if exec_capture(runtime, "which codex-acp", self.spec.workdir).exit_code != 0:
             require_ok_exec(
                 runtime,
                 "npm install -g @zed-industries/codex-acp",
                 self.spec.workdir,
             )
-        exec_fg(runtime, "codex-acp", cwd=self.spec.workdir)
+        proc = runtime.exec(
+            "codex-acp",
+            cwd=self.spec.workdir,
+            stdin=True,
+            stdout=True,
+            tty=tty,
+        )
+        return proc
