@@ -99,10 +99,11 @@ class OpenClawHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        assert proc is not None
+        if proc is None:
+            raise RuntimeError("exec returned None for non-detached process")
         return proc
 
-    def acp(self, runtime: RuntimeBackend, *, tty: bool = False) -> ProcessHandle:
+    def acp(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
         self._ensure_gateway(runtime)
         proc = runtime.exec(
             [self.config.binary, "acp"],
@@ -111,7 +112,8 @@ class OpenClawHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        assert proc is not None
+        if proc is None:
+            raise RuntimeError("exec returned None for non-detached process")
         return proc
 
     def _ensure_gateway(self, runtime: RuntimeBackend) -> None:

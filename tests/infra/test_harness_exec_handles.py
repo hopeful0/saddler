@@ -77,7 +77,7 @@ class _FakeRuntime:
                 "detach": detach,
             }
         )
-        _ = (cwd, env, stdin, stdout, stderr, tty, timeout)
+        _ = (cwd, env, stderr, timeout)
         if detach:
             return None
         if command == [  # openclaw gateway status checks in _ensure_gateway
@@ -145,9 +145,7 @@ def test_harness_tui_and_acp_return_process_handle_with_stdio(
     def _command_text(command: object) -> str:
         if isinstance(command, str):
             return command
-        if isinstance(command, list):
-            return " ".join(str(part) for part in command)
-        return " ".join(command)
+        return " ".join(str(part) for part in command)  # type: ignore[union-attr]
 
     tui_cmd = _command_text(tui_call["command"])
     acp_cmd = _command_text(acp_call["command"])

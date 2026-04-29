@@ -98,10 +98,11 @@ class CodexHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        assert proc is not None
+        if proc is None:
+            raise RuntimeError("exec returned None for non-detached process")
         return proc
 
-    def acp(self, runtime: RuntimeBackend, *, tty: bool = False) -> ProcessHandle:
+    def acp(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
         if exec_capture(runtime, "which codex-acp", self.spec.workdir).exit_code != 0:
             require_ok_exec(
                 runtime,
@@ -115,5 +116,6 @@ class CodexHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        assert proc is not None
+        if proc is None:
+            raise RuntimeError("exec returned None for non-detached process")
         return proc

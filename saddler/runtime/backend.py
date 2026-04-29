@@ -269,7 +269,7 @@ def pump_fg(
             read_set.append(err)
         stdin_obj = handle.stdin
         stdin_fd = None
-        if sys.stdin and not sys.stdin.isatty():
+        if sys.stdin and not tty:
             try:
                 stdin_fd = sys.stdin.fileno()
             except Exception:

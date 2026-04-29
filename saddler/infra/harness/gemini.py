@@ -98,10 +98,11 @@ class GeminiHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        assert proc is not None
+        if proc is None:
+            raise RuntimeError("exec returned None for non-detached process")
         return proc
 
-    def acp(self, runtime: RuntimeBackend, *, tty: bool = False) -> ProcessHandle:
+    def acp(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
         proc = runtime.exec(
             [self.config.binary, "--acp"],
             cwd=self.spec.workdir,
@@ -109,5 +110,6 @@ class GeminiHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        assert proc is not None
+        if proc is None:
+            raise RuntimeError("exec returned None for non-detached process")
         return proc
