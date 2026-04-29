@@ -26,6 +26,11 @@ from .runtime.backend import get_runtime_backend_cls
 from .runtime.backend import RUNTIME_BACKEND_REGISTRY
 from .hitch.cli import hitch_app
 
+try:
+    from .extensions.gateway.cli import gateway_app
+except ImportError:
+    gateway_app = None
+
 
 def _help(text: str) -> str:
     """Escape Rich markup control chars in help text."""
@@ -68,6 +73,8 @@ runtime_app.add_typer(runtime_create_app, name="create")
 app.add_typer(storage_app, name="storage")
 app.add_typer(storage_app, name="st")
 app.add_typer(hitch_app, name="hitch")
+if gateway_app is not None:
+    app.add_typer(gateway_app, name="gateway")
 
 
 # ---------------------------------------------------------------------------

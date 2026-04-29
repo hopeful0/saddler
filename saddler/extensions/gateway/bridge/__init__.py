@@ -1,0 +1,1 @@
+"""Gateway bridge layer."""
