@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import IO, Protocol, Self
+from typing import IO, Literal, Protocol, Self, overload
 
 import select
 
@@ -76,6 +76,34 @@ class RuntimeBackend(Protocol):
 
     def is_running(self) -> bool:
         """Return True if the runtime is active and ready to accept commands."""
+
+    @overload
+    def exec(
+        self,
+        command: Command,
+        cwd: str,
+        env: dict[str, str] | None = None,
+        *,
+        stdin: bool = False,
+        stdout: bool = False,
+        stderr: bool = False,
+        tty: bool = False,
+        detach: Literal[False] = ...,
+    ) -> ProcessHandle: ...
+
+    @overload
+    def exec(
+        self,
+        command: Command,
+        cwd: str,
+        env: dict[str, str] | None = None,
+        *,
+        stdin: bool = False,
+        stdout: bool = False,
+        stderr: bool = False,
+        tty: bool = False,
+        detach: Literal[True],
+    ) -> None: ...
 
     def exec(
         self,
@@ -146,7 +174,6 @@ def exec_capture(
         tty=False,
         detach=False,
     ) as proc:
-        assert proc is not None
         out_fd = proc.stdout
         err_fd = proc.stderr
         if out_fd is None or err_fd is None:
@@ -324,7 +351,6 @@ def exec_fg(
         tty=interactive,
         detach=False,
     ) as proc:
-        assert proc is not None
         pump_fg(proc, tty=interactive)
 
 

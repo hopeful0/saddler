@@ -98,8 +98,6 @@ class CodexHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        if proc is None:
-            raise RuntimeError("exec returned None for non-detached process")
         return proc
 
     def acp(self, runtime: RuntimeBackend, *, tty: bool) -> ProcessHandle:
@@ -116,6 +114,4 @@ class CodexHarness(Harness):
             stdout=True,
             tty=tty,
         )
-        if proc is None:
-            raise RuntimeError("exec returned None for non-detached process")
         return proc
