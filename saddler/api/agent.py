@@ -54,11 +54,11 @@ class AgentApiService:
     def inspect(self, ref: str) -> Agent:
         return self._uc.get_agent(ref)
 
-    def tui(self, ref: str) -> None:
-        self._uc.tui(ref)
+    def tui(self, ref: str, *, tty: bool) -> None:
+        self._uc.tui(ref, tty=tty)
 
-    def acp(self, ref: str) -> None:
-        self._uc.acp(ref)
+    def acp(self, ref: str, *, tty: bool) -> None:
+        self._uc.acp(ref, tty=tty)
 
 
 def _to_role(spec: ResourceCreateSpec | None) -> RoleSpec | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path, PurePosixPath
@@ -812,7 +813,7 @@ def agent_tui(
     ),
 ) -> None:
     """Launch the harness in interactive terminal mode (for human use)."""
-    _agent_api().tui(ref)
+    _agent_api().tui(ref, tty=sys.stdin.isatty())
     typer.echo(f"Harness session ended for agent {ref}.")
 
 
@@ -823,7 +824,7 @@ def agent_acp(
     ),
 ) -> None:
     """Launch the harness in ACP server mode (for machine/API clients)."""
-    _agent_api().acp(ref)
+    _agent_api().acp(ref, tty=sys.stdin.isatty())
     typer.echo(f"ACP session ended for agent {ref}.")
 
 
