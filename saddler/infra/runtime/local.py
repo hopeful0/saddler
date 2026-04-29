@@ -148,9 +148,30 @@ class LocalPipeHandle:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        # Ensure we never block indefinitely in context-manager cleanup.
+        # `subprocess.Popen.__exit__()` calls `wait()` without a timeout, which
+        # can hang if the child ignores SIGTERM.
         if self.poll() is None:
             self.terminate()
-        self._proc.__exit__(exc_type, exc, tb)
+            try:
+                self._proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                self.kill()
+                try:
+                    # Last bounded wait; if this still doesn't exit, we still
+                    # must not hang the caller.
+                    self._proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        for f in (self.stdin, self.stdout, self.stderr):
+            if f is None:
+                continue
+            try:
+                if not f.closed:
+                    f.close()
+            except Exception:
+                pass
 
 
 class LocalPtyHandle:
@@ -196,8 +217,20 @@ class LocalPtyHandle:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        # Ensure we never block indefinitely in context-manager cleanup.
         if self.poll() is None:
             self.terminate()
+            try:
+                self._proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                self.kill()
+                try:
+                    self._proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
         if not self._master.closed:
-            self._master.close()
-        self._proc.__exit__(exc_type, exc, tb)
+            try:
+                self._master.close()
+            except Exception:
+                pass

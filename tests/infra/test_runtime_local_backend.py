@@ -1,6 +1,8 @@
 import os
 import select
 import sys
+import time
+import shlex
 from pathlib import Path
 
 import pytest
@@ -115,3 +117,48 @@ def test_local_pty_handle_child_sees_tty(tmp_path: Path) -> None:
         pytest.skip(f"PTY unavailable in this environment: {exc}")
 
     assert result_file.read_text().strip() == "True"
+
+
+def test_local_pipe_handle_exit_does_not_hang_on_sigterm_ignore() -> None:
+    backend = _make_backend()
+
+    # Child ignores SIGTERM to simulate shutdown that won't complete via terminate().
+    py_code = (
+        "import signal, time; "
+        "signal.signal(signal.SIGTERM, lambda *a: None); "
+        "time.sleep(60)"
+    )
+    cmd = f"{sys.executable} -c {shlex.quote(py_code)}"
+
+    start = time.monotonic()
+    with backend.exec(cmd, cwd=".", stdin=False, stdout=False, stderr=False) as handle:
+        assert isinstance(handle, LocalPipeHandle)
+        assert handle.poll() is None
+        # Exit of the context manager should trigger deterministic cleanup.
+
+    elapsed = time.monotonic() - start
+    assert elapsed < 6.0
+    assert handle.returncode is not None
+
+
+def test_local_pty_handle_exit_does_not_hang_on_sigterm_ignore() -> None:
+    backend = _make_backend()
+
+    py_code = (
+        "import signal, time; "
+        "signal.signal(signal.SIGTERM, lambda *a: None); "
+        "time.sleep(60)"
+    )
+    cmd = f"{sys.executable} -c {shlex.quote(py_code)}"
+
+    try:
+        start = time.monotonic()
+        with backend.exec(cmd, cwd=".", tty=True) as handle:
+            assert isinstance(handle, LocalPtyHandle)
+            assert handle.poll() is None
+        elapsed = time.monotonic() - start
+    except OSError as exc:
+        pytest.skip(f"PTY unavailable in this environment: {exc}")
+
+    assert elapsed < 6.0
+    assert handle.returncode is not None
