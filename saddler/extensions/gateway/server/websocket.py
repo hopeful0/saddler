@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 
 from fastapi import APIRouter, WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 from ....app.errors import AppError
 from ..app.gateway import GatewayUseCase
@@ -22,9 +23,12 @@ def build_websocket_router(use_case: GatewayUseCase) -> APIRouter:
             return
 
         async def ws_to_agent() -> None:
-            while True:
-                payload = await websocket.receive_json()
-                await session.bridge.send(payload)
+            try:
+                while True:
+                    payload = await websocket.receive_json()
+                    await session.bridge.send(payload)
+            except WebSocketDisconnect:
+                return
 
         async def agent_to_ws() -> None:
             try:
@@ -43,7 +47,7 @@ def build_websocket_router(use_case: GatewayUseCase) -> APIRouter:
         finally:
             for task in tasks:
                 task.cancel()
-                with contextlib.suppress(BaseException):
+                with contextlib.suppress(asyncio.CancelledError):
                     await task
             await use_case.close_session(session.session_id)
 
