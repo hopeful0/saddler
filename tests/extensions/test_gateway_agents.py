@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from saddler.agent.model import Agent, AgentSpec, RoleSpec
-from saddler.app.errors import NotFoundError, ValidationError
+from saddler.app.errors import ConflictError, NotFoundError, ValidationError
 from saddler.extensions.gateway.server.agents import build_agents_router
 from saddler.extensions.gateway.server.auth import AuthMiddleware, build_auth_router
 
@@ -36,6 +36,8 @@ class _FakeGatewayApi:
     def create_agent(self, req):
         if req.runtime_ref == "missing-runtime":
             raise NotFoundError("runtime not found")
+        if req.runtime_ref == "conflicting-runtime":
+            raise ConflictError("runtime already bound")
         if req.workdir == "bad-workdir":
             raise ValidationError("workdir must be posix absolute")
         self.created_payloads.append(req)
@@ -114,6 +116,17 @@ def test_agents_error_mapping() -> None:
         },
     )
     assert missing_runtime.status_code == 404
+
+    conflict = client.post(
+        "/agents",
+        headers=headers,
+        json={
+            "runtime_ref": "conflicting-runtime",
+            "harness": "codex",
+            "workdir": "/workspace",
+        },
+    )
+    assert conflict.status_code == 409
 
     validation = client.post(
         "/agents",

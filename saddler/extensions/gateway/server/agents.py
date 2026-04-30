@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from typing import NoReturn
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ....api.agent import AgentCreateRequest, ResourceCreateSpec
-from ....app.errors import AppError, NotFoundError, ValidationError
+from ....app.errors import AppError, ConflictError, NotFoundError, ValidationError
 from ..api.service import GatewayApiService
 
 
+class RoleInput(BaseModel):
+    source: str
+    path: str | None = None
+
+
 class ResourceInput(BaseModel):
-    name: str | None = None
+    name: str
     source: str
     path: str | None = None
 
@@ -18,7 +25,7 @@ class AgentCreateInput(BaseModel):
     runtime_ref: str
     harness: str
     workdir: str
-    role: ResourceInput | None = None
+    role: RoleInput | None = None
     skills: list[ResourceInput] = Field(default_factory=list)
     rules: list[ResourceInput] = Field(default_factory=list)
     harness_spec: dict | None = None
@@ -28,7 +35,7 @@ class AgentCreateInput(BaseModel):
 
 def _to_resource_spec(resource: ResourceInput) -> ResourceCreateSpec:
     return ResourceCreateSpec(
-        name=resource.name or "resource",
+        name=resource.name,
         source=resource.source,
         path=resource.path,
     )
@@ -55,9 +62,11 @@ def _to_create_request(payload: AgentCreateInput) -> AgentCreateRequest:
     )
 
 
-def _raise_http(exc: AppError) -> None:
-    if isinstance(exc, (NotFoundError,)):
+def _raise_http(exc: AppError) -> NoReturn:
+    if isinstance(exc, NotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, ConflictError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, ValidationError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     raise HTTPException(status_code=400, detail=str(exc)) from exc
