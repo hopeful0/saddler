@@ -13,7 +13,6 @@ from ..bridge.stdio import ACPStdioBridge
 @dataclass
 class AgentSession:
     session_id: str
-    agent_id: str
     bridge: ACPStdioBridge
 
     @classmethod
@@ -28,7 +27,6 @@ class AgentSession:
         handle = harness.acp(backend, tty=False)
         return cls(
             session_id=generate_id(),
-            agent_id=agent.id,
             bridge=ACPStdioBridge(handle),
         )
 

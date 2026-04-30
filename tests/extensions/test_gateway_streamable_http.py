@@ -16,14 +16,22 @@ from saddler.extensions.gateway.server.streamable_http import (
 class _FakeBridge:
     def __init__(self) -> None:
         self.sent: list[dict] = []
-        self.messages: asyncio.Queue[dict | None] = asyncio.Queue()
+        self._responses: list[dict | None] = []
+        self._queue: asyncio.Queue | None = None
         self.closed = False
+
+    def _get_queue(self) -> asyncio.Queue:
+        if self._queue is None:
+            self._queue = asyncio.Queue()
+            for item in self._responses:
+                self._queue.put_nowait(item)
+        return self._queue
 
     async def send(self, payload: dict) -> None:
         self.sent.append(payload)
 
     async def recv(self) -> dict:
-        item = await self.messages.get()
+        item = await self._get_queue().get()
         if item is None:
             raise EOFError
         return item
@@ -75,7 +83,7 @@ def test_streamable_http_session_lifecycle() -> None:
     session_id = created.json()["session_id"]
 
     accepted = client.post(
-        f"/agents/a1/sessions/{session_id}/input",
+        f"/sessions/{session_id}/input",
         json={"type": "run", "content": "hello"},
     )
     assert accepted.status_code == 202
@@ -83,13 +91,12 @@ def test_streamable_http_session_lifecycle() -> None:
         {"type": "run", "content": "hello"}
     ]
 
-    use_case.sessions[session_id].bridge.messages.put_nowait(
-        {"type": "event", "data": "world"}
+    use_case.sessions[session_id].bridge._responses.extend(
+        [{"type": "event", "data": "world"}, None]
     )
-    use_case.sessions[session_id].bridge.messages.put_nowait(None)
-    stream = client.get(f"/agents/a1/sessions/{session_id}/stream")
+    stream = client.get(f"/sessions/{session_id}/stream")
     assert stream.status_code == 200
     assert 'data: {"type": "event", "data": "world"}' in stream.text
 
-    missing_delete = client.delete("/agents/a1/sessions/bad-sid")
+    missing_delete = client.delete("/sessions/bad-sid")
     assert missing_delete.status_code == 404

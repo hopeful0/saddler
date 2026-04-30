@@ -23,7 +23,6 @@ def create_gateway_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.gateway_use_case = gateway_use_case
         yield
         await gateway_use_case.close_all()
 

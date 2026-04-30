@@ -12,19 +12,34 @@ from saddler.extensions.gateway.server.websocket import build_websocket_router
 
 
 class _FakeBridge:
-    def __init__(self) -> None:
+    """Bridge whose recv() waits for a corresponding send() before yielding a reply.
+
+    This mirrors real ACP behavior (agent replies after receiving input) and
+    prevents agent_to_ws from racing ahead of ws_to_agent in tests.
+    """
+
+    def __init__(self, responses: list[dict]) -> None:
         self.sent: list[dict] = []
-        self.messages: asyncio.Queue[dict | None] = asyncio.Queue()
+        self._responses = list(responses)
+        self._send_event: asyncio.Event | None = None
         self.closed = False
+
+    def _event(self) -> asyncio.Event:
+        if self._send_event is None:
+            self._send_event = asyncio.Event()
+        return self._send_event
 
     async def send(self, payload: dict) -> None:
         self.sent.append(payload)
+        self._event().set()
 
     async def recv(self) -> dict:
-        item = await self.messages.get()
-        if item is None:
+        ev = self._event()
+        await ev.wait()
+        ev.clear()
+        if not self._responses:
             raise EOFError
-        return item
+        return self._responses.pop(0)
 
     async def close(self) -> None:
         self.closed = True
@@ -41,7 +56,10 @@ class _FakeSession:
 
 class _FakeUseCase:
     def __init__(self) -> None:
-        self.session = _FakeSession("sid-ws", _FakeBridge())
+        self.session = _FakeSession(
+            "sid-ws",
+            _FakeBridge([{"type": "event", "data": "world"}]),
+        )
         self.closed: list[str] = []
 
     async def create_session(self, agent_ref: str) -> _FakeSession:
@@ -55,7 +73,6 @@ class _FakeUseCase:
 
 def test_websocket_bidirectional_forwarding_and_cleanup() -> None:
     use_case = _FakeUseCase()
-    use_case.session.bridge.messages.put_nowait({"type": "event", "data": "world"})
     app = FastAPI()
     app.include_router(build_websocket_router(use_case))
     client = TestClient(app)

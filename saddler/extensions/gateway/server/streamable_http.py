@@ -20,20 +20,16 @@ def build_streamable_http_router(use_case: GatewayUseCase) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"session_id": session.session_id}
 
-    @router.post("/agents/{agent_id}/sessions/{session_id}/input", status_code=202)
-    async def write_input(
-        agent_id: str, session_id: str, payload: dict
-    ) -> dict[str, str]:
-        _ = agent_id
+    @router.post("/sessions/{session_id}/input", status_code=202)
+    async def write_input(session_id: str, payload: dict) -> dict[str, str]:
         session = use_case.get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="session not found")
         await session.bridge.send(payload)
         return {"status": "accepted"}
 
-    @router.get("/agents/{agent_id}/sessions/{session_id}/stream")
-    async def read_stream(agent_id: str, session_id: str) -> StreamingResponse:
-        _ = agent_id
+    @router.get("/sessions/{session_id}/stream")
+    async def read_stream(session_id: str) -> StreamingResponse:
         session = use_case.get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="session not found")
@@ -50,9 +46,8 @@ def build_streamable_http_router(use_case: GatewayUseCase) -> APIRouter:
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    @router.delete("/agents/{agent_id}/sessions/{session_id}", status_code=204)
-    async def delete_session(agent_id: str, session_id: str) -> None:
-        _ = agent_id
+    @router.delete("/sessions/{session_id}", status_code=204)
+    async def delete_session(session_id: str) -> None:
         if use_case.get_session(session_id) is None:
             raise HTTPException(status_code=404, detail="session not found")
         await use_case.close_session(session_id)
