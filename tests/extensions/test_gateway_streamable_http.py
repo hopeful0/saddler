@@ -64,6 +64,9 @@ class _FakeUseCase:
     def get_session(self, session_id: str) -> _FakeSession | None:
         return self.sessions.get(session_id)
 
+    def active_session_count(self) -> int:
+        return len(self.sessions)
+
     async def close_session(self, session_id: str) -> None:
         session = self.sessions.pop(session_id, None)
         if session is None:
@@ -81,6 +84,10 @@ def test_streamable_http_session_lifecycle() -> None:
     created = client.post("/agents/a1/sessions")
     assert created.status_code == 201
     session_id = created.json()["session_id"]
+
+    active = client.get("/sessions/active")
+    assert active.status_code == 200
+    assert active.json() == {"active_sessions": 1}
 
     accepted = client.post(
         f"/sessions/{session_id}/input",

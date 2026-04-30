@@ -17,6 +17,9 @@ class GatewayUseCase:
     def get_session(self, session_id: str) -> AgentSession | None:
         return self._sessions.get(session_id)
 
+    def active_session_count(self) -> int:
+        return len(self._sessions)
+
     async def close_session(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
         if session is None:

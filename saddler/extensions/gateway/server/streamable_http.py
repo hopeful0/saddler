@@ -12,6 +12,10 @@ from ..app.gateway import GatewayUseCase
 def build_streamable_http_router(use_case: GatewayUseCase) -> APIRouter:
     router = APIRouter()
 
+    @router.get("/sessions/active")
+    async def get_active_sessions() -> dict[str, int]:
+        return {"active_sessions": use_case.active_session_count()}
+
     @router.post("/agents/{agent_id}/sessions", status_code=201)
     async def create_session(agent_id: str) -> dict[str, str]:
         try:
