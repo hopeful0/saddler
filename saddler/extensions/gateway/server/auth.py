@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.requests import HTTPConnection
@@ -37,7 +39,9 @@ class AuthMiddleware:
         gateway_token = conn.app.state.gateway_token
         bearer_token = _extract_bearer_token(conn)
         cookie_token = conn.cookies.get("saddler_token")
-        if bearer_token == gateway_token or cookie_token == gateway_token:
+        if secrets.compare_digest(
+            bearer_token or "", gateway_token
+        ) or secrets.compare_digest(cookie_token or "", gateway_token):
             await self.app(scope, receive, send)
             return
 
@@ -65,6 +69,8 @@ class AuthMiddleware:
             )
             return
         except RuntimeError:
+            # Some ASGI servers don't support websocket.http.response.* events;
+            # fall back to a policy-violation close code.
             await send({"type": "websocket.close", "code": 1008})
 
 
@@ -74,7 +80,7 @@ def build_auth_router() -> APIRouter:
     @router.get("/login")
     async def login(request: Request, token: str) -> RedirectResponse:
         gateway_token = request.app.state.gateway_token
-        if token != gateway_token:
+        if not secrets.compare_digest(token, gateway_token):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         response = RedirectResponse(url="/ui", status_code=302)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import secrets
-from typing import Optional
 
 import typer
 import uvicorn
@@ -12,7 +11,7 @@ from .server.app import create_gateway_app
 gateway_app = typer.Typer(help="Gateway server commands")
 
 
-def _resolve_token(auth_token: Optional[str]) -> str:
+def _resolve_token(auth_token: str | None) -> str:
     if auth_token is not None:
         return auth_token
     env_token = os.environ.get("SADDLER_GATEWAY_TOKEN")
@@ -25,7 +24,7 @@ def _resolve_token(auth_token: Optional[str]) -> str:
 def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host"),
     port: int = typer.Option(8080, "--port", help="Bind port"),
-    auth_token: Optional[str] = typer.Option(
+    auth_token: str | None = typer.Option(
         None,
         "--auth-token",
         help="Gateway auth token (defaults to env or generated secret)",
