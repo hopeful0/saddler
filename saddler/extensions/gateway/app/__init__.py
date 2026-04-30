@@ -1,0 +1,1 @@
+"""Gateway app/usecase layer."""
