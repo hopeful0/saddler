@@ -93,6 +93,30 @@ saddler hitch up     [-f FILE ...] [--force-recreate]
 saddler hitch stop / down / ps  [-f FILE ...] [-p PROJECT]
 ```
 
+**Gateway（扩展）**
+
+```
+# 管理面（agent lifecycle）
+POST   /agents
+GET    /agents
+GET    /agents/{agent_id}
+DELETE /agents/{agent_id}
+
+# 通信面（ACP）
+WS     /agents/{agent_id}/ws
+POST   /agents/{agent_id}/sessions
+POST   /sessions/{session_id}/input
+GET    /sessions/{session_id}/stream
+DELETE /sessions/{session_id}
+GET    /sessions/active
+```
+
+Gateway 当前范围说明：
+- 通信面为 ACP（WebSocket + Streamable HTTP）
+- 暂不提供 TUI 接口
+- 暂不提供独立 session 管理能力扩展（维持现有 active 计数与 I/O 路由）
+- 暂不提供创建幂等保证
+
 ---
 
 ## 贰 · 技术规范
