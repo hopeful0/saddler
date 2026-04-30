@@ -37,7 +37,9 @@ class _FakeHandle:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        _ = (exc_type, exc, tb)
+        if self.returncode is None:
+            self.terminate()
+        self.wait()
 
 
 def test_stdio_bridge_send_recv_and_close() -> None:

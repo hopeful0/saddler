@@ -37,12 +37,4 @@ class ACPStdioBridge:
 
     async def close(self) -> None:
         loop = asyncio.get_running_loop()
-
-        def _close() -> None:
-            try:
-                self._handle.terminate()
-            except Exception:
-                pass
-            self._handle.wait()
-
-        await loop.run_in_executor(None, _close)
+        await loop.run_in_executor(None, self._handle.__exit__, None, None, None)
