@@ -85,6 +85,7 @@ async def test_http_remote_session_connect_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sse_body = 'data: {"x": 1}\n\ndata: {"x": 2}\n\n'
+    captured_timeout: httpx.Timeout | None = None
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -105,6 +106,8 @@ async def test_http_remote_session_connect_factory(
     real_async_client = httpx.AsyncClient
 
     def _make_client(**kwargs: Any) -> httpx.AsyncClient:
+        nonlocal captured_timeout
+        captured_timeout = kwargs.get("timeout")
         return real_async_client(transport=transport, **kwargs)
 
     monkeypatch.setattr(
@@ -112,6 +115,8 @@ async def test_http_remote_session_connect_factory(
         _make_client,
     )
     session = await HttpRemoteSession.connect("http://gateway.test", "a", token="tok")
+    assert captured_timeout is not None
+    assert captured_timeout.read is None
     await session.send({"type": "run"})
     assert await session.recv() == {"x": 1}
     assert await session.recv() == {"x": 2}

@@ -21,6 +21,8 @@ class HttpRemoteSession:
         client = httpx.AsyncClient(
             base_url=base,
             headers={"Authorization": f"Bearer {token}"},
+            # Keep streaming reads open indefinitely for interactive sessions.
+            timeout=httpx.Timeout(5.0, read=None),
         )
         try:
             r = await client.post(f"/agents/{agent_ref}/sessions")

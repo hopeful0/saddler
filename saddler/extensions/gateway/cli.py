@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import sys
@@ -64,15 +65,41 @@ async def _connect_stdin_loop(
     loop: asyncio.AbstractEventLoop,
     session: object,
 ) -> None:
-    while True:
-        line: str = await loop.run_in_executor(None, sys.stdin.readline)
-        if line == "":
+    reader: asyncio.StreamReader | None = None
+    transport: asyncio.Transport | None = None
+    try:
+        if hasattr(sys.stdin, "fileno") and sys.stdin.isatty():
+            reader = asyncio.StreamReader()
+            protocol = asyncio.StreamReaderProtocol(reader)
+            transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+    except (NotImplementedError, OSError, ValueError):
+        # Fallback for test harnesses or non-file stdin objects.
+        reader = None
+        transport = None
+
+    try:
+        if reader is not None:
+            while True:
+                line = await reader.readline()
+                if line == b"":
+                    return
+                stripped = line.decode("utf-8").strip()
+                if not stripped:
+                    continue
+                await session.send(json.loads(stripped))
             return
-        stripped = line.strip()
-        if not stripped:
-            continue
-        payload = json.loads(stripped)
-        await session.send(payload)
+
+        while True:
+            line: str = await loop.run_in_executor(None, sys.stdin.readline)
+            if line == "":
+                return
+            stripped = line.strip()
+            if not stripped:
+                continue
+            await session.send(json.loads(stripped))
+    finally:
+        if transport is not None:
+            transport.close()
 
 
 async def _connect_recv_loop(session: object) -> None:
@@ -128,6 +155,8 @@ def connect(
         typer.echo("--transport must be ws or http", err=True)
         raise typer.Exit(1)
     auth = _resolve_connect_token(token)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     try:
         asyncio.run(
             _connect_async(
