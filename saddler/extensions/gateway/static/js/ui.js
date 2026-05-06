@@ -7,6 +7,10 @@
       .replace(/"/g, "&quot;");
   }
 
+  function formatUserMessageHtml(text) {
+    return escapeHtml(String(text)).replace(/\n/g, "<br>");
+  }
+
   function renderMarkdown(text) {
     const md = global.marked;
     const s = String(text);
@@ -23,6 +27,9 @@
       } catch {
         return `<pre class="md-fallback">${escapeHtml(s)}</pre>`;
       }
+    }
+    if (!global.marked) {
+      showCdnWarning();
     }
     return `<pre class="md-fallback">${escapeHtml(s)}</pre>`;
   }
@@ -97,8 +104,8 @@
     wrap.className = "msg msg-user";
     wrap.dataset.role = "user";
     const bubble = document.createElement("div");
-    bubble.className = "msg-bubble msg-md";
-    bubble.innerHTML = renderMarkdown(text);
+    bubble.className = "msg-bubble";
+    bubble.innerHTML = formatUserMessageHtml(text);
     wrap.appendChild(bubble);
     root.appendChild(wrap);
     root.scrollTop = root.scrollHeight;
@@ -114,7 +121,7 @@
       el.className = "msg msg-user msg-user-streaming";
       el.dataset.role = "user";
       const bubble = document.createElement("div");
-      bubble.className = "msg-bubble msg-md";
+      bubble.className = "msg-bubble";
       el.appendChild(bubble);
       root.appendChild(el);
     }
@@ -135,7 +142,7 @@
     if (!bubble) return;
     const acc = (bubble.dataset.raw || "") + text;
     bubble.dataset.raw = acc;
-    bubble.innerHTML = renderMarkdown(acc);
+    bubble.innerHTML = formatUserMessageHtml(acc);
     const root = document.getElementById("messages");
     if (root) root.scrollTop = root.scrollHeight;
   }
@@ -271,7 +278,9 @@
       });
       root.appendChild(row);
     }
-    row.querySelector(".tool-title").textContent = title || toolCallId;
+    const titleEl = row.querySelector(".tool-title");
+    if (title) titleEl.textContent = title;
+    else if (!titleEl.textContent) titleEl.textContent = toolCallId;
     const icon = row.querySelector(".tool-status-icon");
     icon.dataset.status = status;
     return row;
