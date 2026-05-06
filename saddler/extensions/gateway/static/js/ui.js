@@ -85,6 +85,18 @@
     if (btn) btn.disabled = !enabled;
   }
 
+  function setPromptSending(sending) {
+    const cancel = document.getElementById("prompt-cancel");
+    if (!cancel) return;
+    if (sending) {
+      cancel.classList.remove("hidden");
+      cancel.disabled = false;
+    } else {
+      cancel.classList.add("hidden");
+      cancel.disabled = true;
+    }
+  }
+
   function clearMessages() {
     const root = document.getElementById("messages");
     if (root) root.innerHTML = "";
@@ -436,6 +448,7 @@
     setAgentOptions,
     setSidebarVisible,
     setInputEnabled,
+    setPromptSending,
     clearMessages,
     setChatHint,
     appendUserMessage,

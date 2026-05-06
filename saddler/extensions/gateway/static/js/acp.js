@@ -253,6 +253,12 @@
     sessionPrompt(params) {
       return this.request("session/prompt", params);
     }
+
+    sessionCancel(params) {
+      const p = params && typeof params === "object" ? params : {};
+      if (p.sessionId == null || p.sessionId === "") return;
+      this.notify("session/cancel", { sessionId: p.sessionId });
+    }
   }
 
   global.ACPJsonRpcError = ACPJsonRpcError;

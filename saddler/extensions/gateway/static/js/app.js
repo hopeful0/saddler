@@ -16,6 +16,7 @@
     transcript: [],
     lastPromptUserText: null,
     sending: false,
+    promptWatchdog: null,
     unsubConn: null,
     unsubUp: null,
     initializing: false,
@@ -91,6 +92,13 @@
     }
   }
 
+  function clearPromptWatchdog() {
+    if (state.promptWatchdog != null) {
+      clearTimeout(state.promptWatchdog);
+      state.promptWatchdog = null;
+    }
+  }
+
   function refreshInputState() {
     const ok =
       state.client &&
@@ -100,6 +108,7 @@
       !state.sending &&
       state.caps;
     ui.setInputEnabled(!!ok);
+    ui.setPromptSending(!!state.sending);
   }
 
   function blockText(content) {
@@ -769,6 +778,7 @@
       })
       .then(() => {
         finalizeStreamingTurns();
+        ui.setChatHint("");
       })
       .catch((e) => {
         const msg = formatClientThrowable(e);
@@ -776,9 +786,29 @@
         finalizeStreamingTurns();
       })
       .finally(() => {
+        clearPromptWatchdog();
         state.sending = false;
         refreshInputState();
       });
+  });
+
+  document.getElementById("prompt-cancel").addEventListener("click", () => {
+    if (!state.sending || !state.client || !state.currentSessionId) return;
+    state.client.sessionCancel({ sessionId: state.currentSessionId });
+    ui.setChatHint(
+      `<p>${ui.escapeHtml("已发送取消请求，等待会话结束…")}</p>`,
+    );
+    clearPromptWatchdog();
+    state.promptWatchdog = setTimeout(() => {
+      state.promptWatchdog = null;
+      if (!state.sending) return;
+      state.sending = false;
+      finalizeStreamingTurns();
+      refreshInputState();
+      ui.setChatHint(
+        `<p>${ui.escapeHtml("长时间无响应，已恢复输入；若问题持续请使用「重试」或新建会话")}</p>`,
+      );
+    }, 15000);
   });
 
   if (document.readyState === "loading") {
