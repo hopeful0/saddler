@@ -322,6 +322,12 @@
     return wrap;
   }
 
+  function clearSessionList() {
+    const ul = document.getElementById("session-list");
+    if (!ul) return;
+    ul.innerHTML = "";
+  }
+
   function renderSessionList(
     sessions,
     activeId,
@@ -434,6 +440,7 @@
     updateToolCardDetail,
     renderPlanBlock,
     renderSessionList,
+    clearSessionList,
     restoreMessagesFromCache,
   };
 })(window);

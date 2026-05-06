@@ -55,6 +55,22 @@
     };
   }
 
+  /** JSON-RPC / ACP 错误与普通 Error 的展示文案（见 ACP error-handling） */
+  function formatClientThrowable(e) {
+    if (e == null) return "未知错误";
+    if (typeof e.message === "string" && e.message) {
+      if (typeof e.code === "number") {
+        return `${e.message}（错误码 ${e.code}）`;
+      }
+      return e.message;
+    }
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return String(e);
+    }
+  }
+
   function persistTranscript() {
     if (!state.currentSessionId) return;
     try {
@@ -392,8 +408,11 @@
     return out;
   }
 
+  /** @returns {Promise<boolean>} 是否成功从服务端拉取列表（失败时保留已设置的 `setChatHint`） */
   async function loadSessionsFromServer() {
-    if (!state.client || !state.caps || !state.caps.sessionList) return;
+    if (!state.client || !state.caps || !state.caps.sessionList) {
+      return true;
+    }
     try {
       const list = await fetchAllSessions(state.client);
       state.sessions = list;
@@ -402,8 +421,14 @@
         cache.setSessionList(state.agentId, list);
       }
       renderSessionListUI();
-    } catch {
-      /* keep stale list */
+      return true;
+    } catch (e) {
+      state.sessionsStale = state.sessions.length > 0;
+      ui.setChatHint(
+        `<p>加载会话列表失败：${ui.escapeHtml(formatClientThrowable(e))}</p>`,
+      );
+      renderSessionListUI();
+      return false;
     }
   }
 
@@ -560,6 +585,7 @@
     state.sessionsStale = false;
     ui.clearMessages();
     ui.setChatHint("");
+    ui.clearSessionList();
 
     const cached = cache.getAgentCaps(agentId);
     if (cached && cached.sessionList) {
@@ -582,10 +608,11 @@
       await client.connect();
     } catch (e) {
       ui.setConnectionStatus("disconnected");
-      ui.setChatHint(`<p>${ui.escapeHtml(String(e.message || e))}</p>`);
+      ui.setChatHint(`<p>${ui.escapeHtml(formatClientThrowable(e))}</p>`);
       return;
     }
 
+    let sessionListFetchedOk = true;
     try {
       const initResult = await client.initialize();
       state.caps = normalizeCaps(initResult);
@@ -595,10 +622,12 @@
         state.sessions = [];
         renderSessionListUI();
       } else {
-        await loadSessionsFromServer();
+        sessionListFetchedOk = await loadSessionsFromServer();
       }
     } catch (e) {
-      ui.setChatHint(`<p>初始化失败：${ui.escapeHtml(String(e.message || e))}</p>`);
+      ui.setChatHint(
+        `<p>初始化失败：${ui.escapeHtml(formatClientThrowable(e))}</p>`,
+      );
       return;
     }
 
@@ -627,13 +656,15 @@
       }
       refreshInputState();
     } else if (state.caps.sessionList) {
-      ui.setChatHint(
-        `<p>${ui.escapeHtml("点击「新对话」开始，或从左侧选择历史会话。")}</p>`,
-      );
       state.currentSessionId = null;
       state.transcript = [];
       ui.clearMessages();
       refreshInputState();
+      if (sessionListFetchedOk) {
+        ui.setChatHint(
+          `<p>${ui.escapeHtml("点击「新对话」开始，或从左侧选择历史会话。")}</p>`,
+        );
+      }
     } else {
       await newSession();
     }
@@ -691,7 +722,7 @@
 
   document.getElementById("new-session").addEventListener("click", () => {
     void newSession().catch((e) => {
-      ui.setChatHint(`<p>${ui.escapeHtml(String(e.message || e))}</p>`);
+      ui.setChatHint(`<p>${ui.escapeHtml(formatClientThrowable(e))}</p>`);
     });
   });
 
@@ -740,10 +771,7 @@
         finalizeStreamingTurns();
       })
       .catch((e) => {
-        const msg =
-          e && e.message
-            ? String(e.message)
-            : JSON.stringify(e || "session/prompt 失败");
+        const msg = formatClientThrowable(e);
         ui.setChatHint(`<p>${ui.escapeHtml(msg)}</p>`);
         finalizeStreamingTurns();
       })

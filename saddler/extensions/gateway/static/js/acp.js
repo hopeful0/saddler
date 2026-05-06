@@ -1,9 +1,46 @@
 /**
  * Agent Client Protocol: https://agentclientprotocol.com/get-started/introduction
  * Schema: https://agentclientprotocol.com/protocol/schema
+ * JSON-RPC errors: https://agentclientprotocol.com/protocol/overview#error-handling
  */
 
 (function (global) {
+  class ACPJsonRpcError extends Error {
+    /**
+     * @param {unknown} err JSON-RPC `error` object (`code`, `message`, optional `data`)
+     */
+    constructor(err) {
+      let code = null;
+      let data;
+      let text = "";
+      if (err && typeof err === "object" && !Array.isArray(err)) {
+        if (typeof err.code === "number") {
+          code = err.code;
+        }
+        if ("data" in err) {
+          data = err.data;
+        }
+        if (typeof err.message === "string") {
+          text = err.message;
+        }
+      } else if (typeof err === "string") {
+        text = err;
+      }
+      if (!text) {
+        text =
+          code != null
+            ? `远程方法返回错误（code ${code}）`
+            : "远程方法返回错误";
+      }
+      super(text);
+      this.name = "ACPJsonRpcError";
+      this.code = code;
+      if (data !== undefined) {
+        this.data = data;
+      }
+    }
+  }
+
   function withMcpServersArray(params) {
     const p = params && typeof params === "object" ? { ...params } : {};
     if (!Array.isArray(p.mcpServers)) {
@@ -101,6 +138,16 @@
     }
 
     _handleMessage(msg) {
+      if (Array.isArray(msg)) {
+        for (const part of msg) {
+          this._handleMessage(part);
+        }
+        return;
+      }
+      if (!msg || typeof msg !== "object") {
+        console.warn("acp: ignored non-object message");
+        return;
+      }
       if (
         msg.id !== undefined &&
         msg.id !== null &&
@@ -109,11 +156,20 @@
         const p = this._pending.get(msg.id);
         if (p) {
           this._pending.delete(msg.id);
-          if (msg.error) {
-            p.reject(msg.error);
-          } else {
+          if (msg.error !== undefined && msg.error !== null) {
+            p.reject(new ACPJsonRpcError(msg.error));
+          } else if (msg.result !== undefined) {
             p.resolve(msg.result);
+          } else {
+            p.reject(
+              new ACPJsonRpcError({
+                code: -32603,
+                message: "响应缺少 result 与 error",
+              }),
+            );
           }
+        } else if (msg.id !== undefined && msg.id !== null) {
+          console.warn("acp: unmatched response id", msg.id);
         }
         return;
       }
@@ -199,5 +255,6 @@
     }
   }
 
+  global.ACPJsonRpcError = ACPJsonRpcError;
   global.ACPClient = ACPClient;
 })(window);
