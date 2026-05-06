@@ -17,8 +17,13 @@ def test_mount_gateway_ui_serves_index() -> None:
 
     response = client.get("/ui")
     assert response.status_code == 200
-    assert "Gateway 运行状态" in response.text
-    assert 'fetch("/sessions/active"' in response.text
+    assert "Saddler Gateway" in response.text
+    assert 'id="agent-select"' in response.text
+    assert "/ui/js/app.js" in response.text
+    app_js = client.get("/ui/js/app.js")
+    assert app_js.status_code == 200
+    assert 'fetch("/agents"' in app_js.text
+    assert client.get("/ui/css/app.css").status_code == 200
 
 
 def test_ui_requires_auth() -> None:
