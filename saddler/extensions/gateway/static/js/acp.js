@@ -1,4 +1,17 @@
+/**
+ * Agent Client Protocol: https://agentclientprotocol.com/get-started/introduction
+ * Schema: https://agentclientprotocol.com/protocol/schema
+ */
+
 (function (global) {
+  function withMcpServersArray(params) {
+    const p = params && typeof params === "object" ? { ...params } : {};
+    if (!Array.isArray(p.mcpServers)) {
+      p.mcpServers = [];
+    }
+    return p;
+  }
+
   class ACPClient {
     constructor(agentId) {
       this.agentId = agentId;
@@ -166,15 +179,15 @@
     }
 
     sessionNew(params) {
-      return this.request("session/new", params || {});
+      return this.request("session/new", withMcpServersArray(params));
     }
 
     sessionResume(params) {
-      return this.request("session/resume", params);
+      return this.request("session/resume", withMcpServersArray(params));
     }
 
     sessionLoad(params) {
-      return this.request("session/load", params);
+      return this.request("session/load", withMcpServersArray(params));
     }
 
     sessionClose(params) {

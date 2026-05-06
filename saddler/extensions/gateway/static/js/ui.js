@@ -97,12 +97,47 @@
     wrap.className = "msg msg-user";
     wrap.dataset.role = "user";
     const bubble = document.createElement("div");
-    bubble.className = "msg-bubble";
+    bubble.className = "msg-bubble msg-md";
     bubble.innerHTML = renderMarkdown(text);
     wrap.appendChild(bubble);
     root.appendChild(wrap);
     root.scrollTop = root.scrollHeight;
     return wrap;
+  }
+
+  function ensureUserStreamBubble() {
+    const root = document.getElementById("messages");
+    if (!root) return null;
+    let el = root.querySelector(".msg-user-streaming");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "msg msg-user msg-user-streaming";
+      el.dataset.role = "user";
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble msg-md";
+      el.appendChild(bubble);
+      root.appendChild(el);
+    }
+    return el.querySelector(".msg-bubble");
+  }
+
+  function finalizeUserBubble() {
+    const root = document.getElementById("messages");
+    if (!root) return;
+    const el = root.querySelector(".msg-user-streaming");
+    if (el) {
+      el.classList.remove("msg-user-streaming");
+    }
+  }
+
+  function appendUserTextChunk(text) {
+    const bubble = ensureUserStreamBubble();
+    if (!bubble) return;
+    const acc = (bubble.dataset.raw || "") + text;
+    bubble.dataset.raw = acc;
+    bubble.innerHTML = renderMarkdown(acc);
+    const root = document.getElementById("messages");
+    if (root) root.scrollTop = root.scrollHeight;
   }
 
   function ensureAssistantBubble() {
@@ -137,6 +172,74 @@
     bubble.innerHTML = renderMarkdown(acc);
     const root = document.getElementById("messages");
     if (root) root.scrollTop = root.scrollHeight;
+  }
+
+  function createThoughtBlockShell(streaming) {
+    const wrap = document.createElement("div");
+    wrap.className = streaming
+      ? "thought-block msg-thought-streaming"
+      : "thought-block";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "thought-toggle";
+    btn.setAttribute("aria-expanded", "false");
+    btn.innerHTML =
+      '<span class="thought-chevron">▸</span> 思考';
+    const body = document.createElement("div");
+    body.className = "thought-body hidden";
+    const inner = document.createElement("div");
+    inner.className = "thought-inner msg-md";
+    body.appendChild(inner);
+    btn.addEventListener("click", () => {
+      const ex = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", ex ? "false" : "true");
+      body.classList.toggle("hidden", ex);
+      btn.querySelector(".thought-chevron").textContent = ex ? "▸" : "▾";
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(body);
+    return { wrap, inner };
+  }
+
+  function ensureThoughtBubble() {
+    const root = document.getElementById("messages");
+    if (!root) return null;
+    let wrap = root.querySelector(".thought-block.msg-thought-streaming");
+    if (!wrap) {
+      const shell = createThoughtBlockShell(true);
+      root.appendChild(shell.wrap);
+      return shell.inner;
+    }
+    return wrap.querySelector(".thought-inner");
+  }
+
+  function finalizeThoughtBubble() {
+    const root = document.getElementById("messages");
+    if (!root) return;
+    const el = root.querySelector(".thought-block.msg-thought-streaming");
+    if (el) {
+      el.classList.remove("msg-thought-streaming");
+    }
+  }
+
+  function appendThoughtTextChunk(text) {
+    const bubble = ensureThoughtBubble();
+    if (!bubble) return;
+    const acc = (bubble.dataset.raw || "") + text;
+    bubble.dataset.raw = acc;
+    bubble.innerHTML = renderMarkdown(acc);
+    const root = document.getElementById("messages");
+    if (root) root.scrollTop = root.scrollHeight;
+  }
+
+  function renderThoughtBlock(text) {
+    const root = document.getElementById("messages");
+    if (!root) return;
+    const shell = createThoughtBlockShell(false);
+    shell.inner.dataset.raw = text || "";
+    shell.inner.innerHTML = renderMarkdown(text || "");
+    root.appendChild(shell.wrap);
+    root.scrollTop = root.scrollHeight;
   }
 
   function renderToolCard(toolCallId, title, status) {
@@ -195,7 +298,7 @@
     btn.className = "plan-toggle";
     btn.setAttribute("aria-expanded", "false");
     btn.innerHTML =
-      '<span class="plan-chevron">▸</span> 思考 <span class="plan-meta"></span>';
+      '<span class="plan-chevron">▸</span> 计划 <span class="plan-meta"></span>';
     const body = document.createElement("div");
     body.className = "plan-body hidden";
     const ul = document.createElement("ul");
@@ -297,6 +400,8 @@
         bubble.innerHTML = renderMarkdown(m.text || "");
         wrap.appendChild(bubble);
         root.appendChild(wrap);
+      } else if (m.kind === "thought") {
+        renderThoughtBlock(m.text || "");
       } else if (m.kind === "tool") {
         renderToolCard(m.toolCallId, m.title, m.status);
         updateToolCardDetail(m.toolCallId, m.detail || "");
@@ -319,8 +424,12 @@
     clearMessages,
     setChatHint,
     appendUserMessage,
+    appendUserTextChunk,
     appendAssistantTextChunk,
+    appendThoughtTextChunk,
     finalizeAssistantBubble,
+    finalizeUserBubble,
+    finalizeThoughtBubble,
     renderToolCard,
     updateToolCardDetail,
     renderPlanBlock,

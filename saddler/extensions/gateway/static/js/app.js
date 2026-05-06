@@ -14,6 +14,7 @@
     readonly: false,
     readonlyDetail: "",
     transcript: [],
+    lastPromptUserText: null,
     sending: false,
     unsubConn: null,
     unsubUp: null,
@@ -105,6 +106,33 @@
     return parts.join("\n");
   }
 
+  function stringifyToolDetail(value) {
+    if (value == null) return "";
+    const t = typeof value;
+    if (t === "string") return value;
+    if (t === "number" || t === "boolean") return String(value);
+    if (t === "bigint") return String(value);
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function finalizeThoughtTurn() {
+    const root = document.getElementById("messages");
+    if (!root || !root.querySelector(".msg-thought-streaming")) return;
+    const bubble = root.querySelector(
+      ".msg-thought-streaming .thought-inner",
+    );
+    const raw = bubble && bubble.dataset.raw ? bubble.dataset.raw : "";
+    ui.finalizeThoughtBubble();
+    if (raw) {
+      state.transcript.push({ kind: "thought", text: raw });
+      persistTranscript();
+    }
+  }
+
   function finalizeAssistantTurn() {
     const root = document.getElementById("messages");
     if (!root || !root.querySelector(".msg-assistant-streaming")) return;
@@ -117,6 +145,51 @@
       state.transcript.push({ kind: "assistant", text: raw });
       persistTranscript();
     }
+  }
+
+  function finalizeUserTurn() {
+    const root = document.getElementById("messages");
+    if (!root || !root.querySelector(".msg-user-streaming")) return;
+    const wrap = root.querySelector(".msg-user-streaming");
+    const bubble = wrap && wrap.querySelector(".msg-bubble");
+    const raw = bubble && bubble.dataset.raw ? bubble.dataset.raw : "";
+    if (
+      raw &&
+      state.lastPromptUserText != null &&
+      raw === state.lastPromptUserText
+    ) {
+      state.lastPromptUserText = null;
+      wrap.remove();
+      return;
+    }
+    state.lastPromptUserText = null;
+    ui.finalizeUserBubble();
+    if (raw) {
+      state.transcript.push({ kind: "user", text: raw });
+      persistTranscript();
+    }
+  }
+
+  function finalizeOpenUserStreamIfAny() {
+    const root = document.getElementById("messages");
+    if (root && root.querySelector(".msg-user-streaming")) {
+      finalizeUserTurn();
+    }
+  }
+
+  /** 将仍带 streaming 类的气泡写入 transcript 并持久化（避免未收到 isLast 就切会话导致缓存缺最后一条） */
+  function flushStreamingToTranscript() {
+    if (!state.currentSessionId) return;
+    finalizeThoughtTurn();
+    finalizeAssistantTurn();
+    finalizeUserTurn();
+  }
+
+  function finalizeStreamingTurns() {
+    finalizeThoughtTurn();
+    finalizeAssistantTurn();
+    finalizeUserTurn();
+    state.lastPromptUserText = null;
   }
 
   function handleSessionUpdate(params) {
@@ -144,7 +217,48 @@
     const u = params.update || {};
     const kind = u.sessionUpdate || u.type;
 
-    if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
+    if (kind === "user_message_chunk") {
+      const root = document.getElementById("messages");
+      if (root) {
+        if (root.querySelector(".msg-thought-streaming")) {
+          finalizeThoughtTurn();
+        }
+        if (root.querySelector(".msg-assistant-streaming")) {
+          finalizeAssistantTurn();
+        }
+      }
+      const piece = blockText(u.content);
+      if (piece) ui.appendUserTextChunk(piece);
+      if (u.isLast === true || u.last === true) {
+        finalizeUserTurn();
+      }
+      return;
+    }
+
+    if (kind === "agent_thought_chunk") {
+      const root = document.getElementById("messages");
+      if (root && root.querySelector(".msg-user-streaming")) {
+        finalizeUserTurn();
+      }
+      if (root && root.querySelector(".msg-assistant-streaming")) {
+        finalizeAssistantTurn();
+      }
+      const piece = blockText(u.content);
+      if (piece) ui.appendThoughtTextChunk(piece);
+      if (u.isLast === true || u.last === true) {
+        finalizeThoughtTurn();
+      }
+      return;
+    }
+
+    if (kind === "agent_message_chunk") {
+      const root = document.getElementById("messages");
+      if (root && root.querySelector(".msg-user-streaming")) {
+        finalizeUserTurn();
+      }
+      if (root && root.querySelector(".msg-thought-streaming")) {
+        finalizeThoughtTurn();
+      }
       const piece = blockText(u.content);
       if (piece) ui.appendAssistantTextChunk(piece);
       if (u.isLast === true || u.last === true) {
@@ -154,6 +268,7 @@
     }
 
     if (kind === "tool_call") {
+      finalizeOpenUserStreamIfAny();
       ui.renderToolCard(
         u.toolCallId,
         u.title || u.toolCallId,
@@ -171,11 +286,12 @@
     }
 
     if (kind === "tool_call_update") {
+      finalizeOpenUserStreamIfAny();
       const st = u.status || "pending";
       ui.renderToolCard(u.toolCallId, "", st);
       const detail =
         flattenToolContent(u.content) ||
-        (u.rawOutput != null ? String(u.rawOutput) : "");
+        (u.rawOutput != null ? stringifyToolDetail(u.rawOutput) : "");
       if (detail) ui.updateToolCardDetail(u.toolCallId, detail);
       const t = state.transcript.find(
         (x) => x.kind === "tool" && x.toolCallId === u.toolCallId,
@@ -189,6 +305,7 @@
     }
 
     if (kind === "plan") {
+      finalizeOpenUserStreamIfAny();
       ui.renderPlanBlock(u.entries || []);
       state.transcript.push({ kind: "plan", entries: u.entries || [] });
       persistTranscript();
@@ -267,6 +384,14 @@
     return undefined;
   }
 
+  /** Merge agent workdir as ACP `cwd` when present (session/load 等要求绝对路径字符串). */
+  function acpSessionParams(extra) {
+    const out = { ...extra };
+    const cwd = state.agentId ? cwdForAgent(state.agentId) : undefined;
+    if (cwd) out.cwd = cwd;
+    return out;
+  }
+
   async function loadSessionsFromServer() {
     if (!state.client || !state.caps || !state.caps.sessionList) return;
     try {
@@ -294,6 +419,8 @@
 
   async function selectSession(sessionId) {
     if (!sessionId || !state.agentId) return;
+    flushStreamingToTranscript();
+    state.lastPromptUserText = null;
     state.currentSessionId = sessionId;
     writeHash(state.agentId, sessionId);
     state.readonly = false;
@@ -308,7 +435,7 @@
       state.transcript = l3.slice();
       ui.restoreMessagesFromCache(state.transcript);
       try {
-        await state.client.sessionResume({ sessionId });
+        await state.client.sessionResume(acpSessionParams({ sessionId }));
         setReadonly(false, "");
       } catch {
         if (caps && caps.sessionResume) {
@@ -330,23 +457,32 @@
 
     if (caps && caps.loadSession) {
       ui.setChatHint("<p>正在加载会话历史…</p>");
-      try {
-        await state.client.sessionLoad({ sessionId });
-      } catch {
-        /* continue to accept replay if any */
+      const loadCwd = cwdForAgent(state.agentId);
+      let loadSucceeded = false;
+      if (loadCwd) {
+        try {
+          await state.client.sessionLoad(acpSessionParams({ sessionId }));
+          loadSucceeded = true;
+        } catch {
+          /* fall back to session/resume */
+        }
       }
       ui.setChatHint("");
-      try {
-        await state.client.sessionResume({ sessionId });
+      if (loadSucceeded) {
         setReadonly(false, "");
-      } catch {
-        if (caps.sessionResume) {
-          setReadonly(true, "该会话已结束，无法续聊");
-        } else {
-          setReadonly(
-            true,
-            "无法继续对话（未支持会话恢复且续连失败）",
-          );
+      } else {
+        try {
+          await state.client.sessionResume(acpSessionParams({ sessionId }));
+          setReadonly(false, "");
+        } catch {
+          if (caps.sessionResume) {
+            setReadonly(true, "该会话已结束，无法续聊");
+          } else {
+            setReadonly(
+              true,
+              "无法继续对话（未支持会话恢复且续连失败）",
+            );
+          }
         }
       }
       refreshInputState();
@@ -358,7 +494,7 @@
       `<p>${ui.escapeHtml("该会话历史不可恢复")}</p>`,
     );
     try {
-      await state.client.sessionResume({ sessionId });
+      await state.client.sessionResume(acpSessionParams({ sessionId }));
       setReadonly(false, "");
     } catch {
       if (state.caps && state.caps.sessionResume) {
@@ -376,9 +512,8 @@
 
   async function newSession() {
     if (!state.client || !state.agentId) return;
-    const cwd = cwdForAgent(state.agentId);
-    const params = cwd ? { cwd } : {};
-    const res = await state.client.sessionNew(params);
+    flushStreamingToTranscript();
+    const res = await state.client.sessionNew(acpSessionParams({}));
     const sid = res.sessionId || res.session_id;
     if (!sid) throw new Error("session/new 未返回 sessionId");
     state.sessions = [
@@ -389,6 +524,7 @@
       cache.setSessionList(state.agentId, state.sessions);
     }
     state.transcript = [];
+    state.lastPromptUserText = null;
     cache.setMessages(sid, []);
     ui.clearMessages();
     ui.setChatHint("");
@@ -400,6 +536,8 @@
   }
 
   async function connectAgent(agentId) {
+    flushStreamingToTranscript();
+
     if (state.unsubConn) {
       state.unsubConn();
       state.unsubConn = null;
@@ -414,6 +552,7 @@
     }
 
     state.agentId = agentId;
+    state.lastPromptUserText = null;
     state.caps = null;
     state.sessions = [];
     state.currentSessionId = null;
@@ -474,7 +613,7 @@
         ui.restoreMessagesFromCache(state.transcript);
       }
       try {
-        await client.sessionResume({ sessionId: session });
+        await client.sessionResume(acpSessionParams({ sessionId: session }));
         setReadonly(false, "");
       } catch {
         if (state.caps.sessionResume) {
@@ -588,6 +727,7 @@
     ta.value = "";
     ui.appendUserMessage(text);
     state.transcript.push({ kind: "user", text });
+    state.lastPromptUserText = text;
     persistTranscript();
 
     const sid = state.currentSessionId;
@@ -597,7 +737,7 @@
         prompt: [{ type: "text", text }],
       })
       .then(() => {
-        finalizeAssistantTurn();
+        finalizeStreamingTurns();
       })
       .catch((e) => {
         const msg =
@@ -605,7 +745,7 @@
             ? String(e.message)
             : JSON.stringify(e || "session/prompt 失败");
         ui.setChatHint(`<p>${ui.escapeHtml(msg)}</p>`);
-        finalizeAssistantTurn();
+        finalizeStreamingTurns();
       })
       .finally(() => {
         state.sending = false;

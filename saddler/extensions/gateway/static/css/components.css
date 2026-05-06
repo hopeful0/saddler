@@ -11,6 +11,40 @@
   justify-content: flex-start;
 }
 
+.thought-block {
+  max-width: min(720px, 96%);
+  border: 1px dashed #334155;
+  border-radius: var(--radius);
+  background: #020617;
+  align-self: flex-start;
+}
+
+.thought-toggle {
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.thought-body {
+  padding: 0 12px 12px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.thought-inner {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+}
+
 .msg-bubble {
   max-width: min(720px, 92%);
   padding: 10px 14px;
