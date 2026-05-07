@@ -25,6 +25,24 @@ def gateway_agent_ws_uri(base_url: str, agent_ref: str) -> str:
     )
 
 
+def gateway_agent_tty_uri(base_url: str, agent_ref: str) -> str:
+    parsed = urlparse(base_url)
+    scheme = parsed.scheme.lower()
+    if scheme == "http":
+        ws_scheme = "ws"
+    elif scheme == "https":
+        ws_scheme = "wss"
+    elif scheme in ("ws", "wss"):
+        ws_scheme = scheme
+    else:
+        msg = f"unsupported URL scheme for gateway WebSocket: {parsed.scheme!r}"
+        raise ValueError(msg)
+    path = parsed.path.rstrip("/") + f"/agents/{agent_ref}/tty"
+    return urlunparse(
+        (ws_scheme, parsed.netloc, path, "", parsed.query, parsed.fragment)
+    )
+
+
 class WsRemoteSession:
     def __init__(self, ws: Any) -> None:
         self._ws = ws
