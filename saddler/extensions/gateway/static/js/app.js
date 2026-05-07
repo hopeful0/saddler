@@ -280,6 +280,22 @@
     state.lastPromptUserText = null;
   }
 
+  /** 参与对话时间线的 session 更新；元数据类更新不触发，避免误收尾流式气泡。 */
+  const SESSION_STREAM_BOUNDARY_KINDS = new Set([
+    "user_message_chunk",
+    "agent_thought_chunk",
+    "agent_message_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan",
+  ]);
+
+  function finalizeStreamingBlocksBefore(kind) {
+    if (!SESSION_STREAM_BOUNDARY_KINDS.has(kind)) return;
+    if (kind !== "agent_thought_chunk") finalizeThoughtTurn();
+    if (kind !== "agent_message_chunk") finalizeAssistantTurn();
+  }
+
   function handleSessionUpdate(params) {
     const sid = params && params.sessionId;
     if (!sid || sid !== state.currentSessionId) {
@@ -304,17 +320,9 @@
     }
     const u = params.update || {};
     const kind = u.sessionUpdate || u.type;
+    finalizeStreamingBlocksBefore(kind);
 
     if (kind === "user_message_chunk") {
-      const root = document.getElementById("messages");
-      if (root) {
-        if (root.querySelector(".msg-thought-streaming")) {
-          finalizeThoughtTurn();
-        }
-        if (root.querySelector(".msg-assistant-streaming")) {
-          finalizeAssistantTurn();
-        }
-      }
       const piece = blockText(u.content);
       if (piece) ui.appendUserTextChunk(piece);
       if (u.isLast === true || u.last === true) {
@@ -328,9 +336,6 @@
       if (root && root.querySelector(".msg-user-streaming")) {
         finalizeUserTurn();
       }
-      if (root && root.querySelector(".msg-assistant-streaming")) {
-        finalizeAssistantTurn();
-      }
       const piece = blockText(u.content);
       if (piece) ui.appendThoughtTextChunk(piece);
       if (u.isLast === true || u.last === true) {
@@ -343,9 +348,6 @@
       const root = document.getElementById("messages");
       if (root && root.querySelector(".msg-user-streaming")) {
         finalizeUserTurn();
-      }
-      if (root && root.querySelector(".msg-thought-streaming")) {
-        finalizeThoughtTurn();
       }
       const piece = blockText(u.content);
       if (piece) ui.appendAssistantTextChunk(piece);
@@ -480,6 +482,54 @@
     return out;
   }
 
+  function pickSessionContinueMethod(caps, hasLocalMessages) {
+    if (!caps) return null;
+    if (hasLocalMessages) {
+      if (caps.sessionResume) return "resume";
+      if (caps.loadSession) return "load";
+      return null;
+    }
+    if (caps.loadSession) return "load";
+    if (caps.sessionResume) return "resume";
+    return null;
+  }
+
+  function readonlyAfterContinueFailure(caps, method) {
+    if (method === "resume" && caps && caps.sessionResume) {
+      setReadonly(true, "该会话已结束，无法续聊");
+      return;
+    }
+    if (method === "load") {
+      setReadonly(true, "无法继续会话（session/load 失败）");
+      return;
+    }
+    setReadonly(true, "无法继续会话（session/resume 失败）");
+  }
+
+  async function continueExistingSession(sessionId, hasLocalMessages) {
+    const caps = state.caps;
+    const method = pickSessionContinueMethod(caps, hasLocalMessages);
+    if (method == null) {
+      setReadonly(
+        true,
+        "无法继续会话：该 agent 未声明当前场景所需的 session/load 或 session/resume 能力。",
+      );
+      return;
+    }
+    if (method === "load" && hasLocalMessages) {
+      state.transcript = [];
+      ui.clearMessages();
+    }
+    const params = acpSessionParams({ sessionId });
+    try {
+      if (method === "load") await state.client.sessionLoad(params);
+      else await state.client.sessionResume(params);
+      setReadonly(false, "");
+    } catch {
+      readonlyAfterContinueFailure(caps, method);
+    }
+  }
+
   /** @returns {Promise<boolean>} 是否成功从服务端拉取列表（失败时保留已设置的 `setChatHint`） */
   async function loadSessionsFromServer() {
     if (!state.client || !state.caps || !state.caps.sessionList) {
@@ -532,18 +582,13 @@
     if (hasL3) {
       state.transcript = l3.slice();
       ui.restoreMessagesFromCache(state.transcript);
-      try {
-        await state.client.sessionResume(acpSessionParams({ sessionId }));
-        setReadonly(false, "");
-      } catch {
-        if (caps && caps.sessionResume) {
-          setReadonly(true, "该会话已结束，无法续聊");
-        } else {
-          setReadonly(
-            true,
-            "无法继续对话（未支持会话恢复且续连失败）",
-          );
-        }
+      const m = pickSessionContinueMethod(caps, true);
+      if (m === "load") {
+        ui.setChatHint("<p>正在加载会话历史…</p>");
+      }
+      await continueExistingSession(sessionId, true);
+      if (!state.readonly) {
+        ui.setChatHint("");
       }
       refreshInputState();
       renderSessionListUI();
@@ -553,56 +598,13 @@
     state.transcript = [];
     ui.clearMessages();
 
-    if (caps && caps.loadSession) {
+    const m0 = pickSessionContinueMethod(caps, false);
+    if (m0 === "load") {
       ui.setChatHint("<p>正在加载会话历史…</p>");
-      const loadCwd = cwdForAgent(state.agentId);
-      let loadSucceeded = false;
-      if (loadCwd) {
-        try {
-          await state.client.sessionLoad(acpSessionParams({ sessionId }));
-          loadSucceeded = true;
-        } catch {
-          /* fall back to session/resume */
-        }
-      }
-      ui.setChatHint("");
-      if (loadSucceeded) {
-        setReadonly(false, "");
-      } else {
-        try {
-          await state.client.sessionResume(acpSessionParams({ sessionId }));
-          setReadonly(false, "");
-        } catch {
-          if (caps.sessionResume) {
-            setReadonly(true, "该会话已结束，无法续聊");
-          } else {
-            setReadonly(
-              true,
-              "无法继续对话（未支持会话恢复且续连失败）",
-            );
-          }
-        }
-      }
-      refreshInputState();
-      renderSessionListUI();
-      return;
     }
-
-    ui.setChatHint(
-      `<p>${ui.escapeHtml("该会话历史不可恢复")}</p>`,
-    );
-    try {
-      await state.client.sessionResume(acpSessionParams({ sessionId }));
-      setReadonly(false, "");
-    } catch {
-      if (state.caps && state.caps.sessionResume) {
-        setReadonly(true, "该会话已结束，无法续聊");
-      } else {
-        setReadonly(
-          true,
-          "无法继续对话（未支持会话恢复且续连失败）",
-        );
-      }
+    await continueExistingSession(sessionId, false);
+    if (!state.readonly) {
+      ui.setChatHint("");
     }
     refreshInputState();
     renderSessionListUI();
@@ -724,18 +726,13 @@
       if (state.transcript.length) {
         ui.restoreMessagesFromCache(state.transcript);
       }
-      try {
-        await client.sessionResume(acpSessionParams({ sessionId: session }));
-        setReadonly(false, "");
-      } catch {
-        if (state.caps.sessionResume) {
-          setReadonly(true, "该会话已结束，无法续聊");
-        } else {
-          setReadonly(
-            true,
-            "无法继续对话（未支持会话恢复且续连失败）",
-          );
-        }
+      const m = pickSessionContinueMethod(state.caps, state.transcript.length > 0);
+      if (m === "load") {
+        ui.setChatHint("<p>正在加载会话历史…</p>");
+      }
+      await continueExistingSession(session, state.transcript.length > 0);
+      if (!state.readonly) {
+        ui.setChatHint("");
       }
       refreshInputState();
     } else if (state.caps.sessionList) {
