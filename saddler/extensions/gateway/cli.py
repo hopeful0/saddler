@@ -231,7 +231,9 @@ async def _connect_tty_async(url: str, agent_ref: str, token: str) -> None:
                     t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
                 for t in done:
-                    with contextlib.suppress(asyncio.CancelledError):
+                    with contextlib.suppress(
+                        asyncio.CancelledError, websockets.exceptions.WebSocketException
+                    ):
                         await t
             finally:
                 if winch_task is not None:

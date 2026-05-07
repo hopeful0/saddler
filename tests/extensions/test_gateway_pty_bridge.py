@@ -61,7 +61,7 @@ def test_pty_bridge_read_write_resize_close() -> None:
         got = await bridge.read()
         assert got == b"hello"
         await bridge.write(b"xyz")
-        await bridge.resize(24, 80)
+        bridge.resize(24, 80)
         assert handle.resized == [(24, 80)]
         assert handle.stdin.getvalue() == b"xyz"
         os.close(out_w)

@@ -31,8 +31,8 @@ class PtyBridge:
         try:
             chunk = os.read(self._fd, 65536)
         except OSError as exc:
-            if exc.errno == errno.EIO and self._handle.poll() is None:
-                return
+            if exc.errno != errno.EIO:
+                raise
             self._detach_reader()
             self._reader.feed_eof()
             return
@@ -59,9 +59,8 @@ class PtyBridge:
 
         await loop.run_in_executor(None, _write)
 
-    async def resize(self, rows: int, cols: int) -> None:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._handle.resize, rows, cols)
+    def resize(self, rows: int, cols: int) -> None:
+        self._handle.resize(rows, cols)
 
     async def close(self) -> None:
         self._detach_reader()

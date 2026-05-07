@@ -39,7 +39,7 @@ class _FakePtyBridge:
     async def write(self, data: bytes) -> None:
         self.writes.append(data)
 
-    async def resize(self, rows: int, cols: int) -> None:
+    def resize(self, rows: int, cols: int) -> None:
         self.resizes.append((rows, cols))
 
     async def close(self) -> None:

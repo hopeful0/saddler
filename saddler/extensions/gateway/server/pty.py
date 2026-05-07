@@ -37,17 +37,15 @@ def build_pty_router(use_case: GatewayUseCase) -> APIRouter:
             try:
                 while True:
                     msg = await websocket.receive()
-                    if msg["type"] == "websocket.disconnect":
-                        return
                     if msg.get("bytes") is not None:
                         await bridge.write(msg["bytes"])
                     elif msg.get("text") is not None:
-                        body = json.loads(msg["text"])
-                        if body.get("type") == "resize":
-                            await bridge.resize(
-                                int(body["rows"]),
-                                int(body["cols"]),
-                            )
+                        with contextlib.suppress(
+                            json.JSONDecodeError, KeyError, ValueError
+                        ):
+                            body = json.loads(msg["text"])
+                            if body.get("type") == "resize":
+                                bridge.resize(int(body["rows"]), int(body["cols"]))
             except WebSocketDisconnect:
                 return
 
