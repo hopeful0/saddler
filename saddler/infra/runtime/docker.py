@@ -617,8 +617,10 @@ class DockerMuxHandle:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self._pump.join(timeout=0.5)
         self._proc.close()
-        self.stdout.close()
-        self.stderr.close()
+        if self.stdout is not None:
+            self.stdout.close()
+        if self.stderr is not None:
+            self.stderr.close()
 
 
 # ---------------------------------------------------------------------------

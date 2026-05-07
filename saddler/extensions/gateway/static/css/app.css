@@ -1,0 +1,279 @@
+:root {
+  --bg: #0b1020;
+  --surface: #111827;
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --muted: #9ca3af;
+  --accent: #38bdf8;
+  --danger: #f87171;
+  --ok: #34d399;
+  --space-1: 6px;
+  --space-2: 10px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.hidden {
+  display: none !important;
+}
+
+#cdn-warning {
+  padding: var(--space-2) var(--space-3);
+  background: #422006;
+  color: #fde68a;
+  border-bottom: 1px solid #78350f;
+  font-size: 14px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+
+.app-header label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+#agent-select {
+  min-width: 200px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.conn-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+#conn-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#conn-status[data-state="connected"] .conn-dot {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+#conn-status[data-state="connecting"] .conn-dot {
+  background: #fbbf24;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+#conn-status[data-state="disconnected"] .conn-dot {
+  background: var(--danger);
+}
+
+.conn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.btn {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #0e7490;
+  border-color: #155e75;
+  color: #ecfeff;
+}
+
+.btn-primary:hover {
+  background: #155e75;
+  color: #fff;
+}
+
+.layout {
+  display: flex;
+  height: calc(100vh - 52px);
+  max-height: calc(100vh - 52px);
+}
+
+#session-sidebar {
+  width: 260px;
+  min-width: 220px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2);
+  gap: var(--space-2);
+}
+
+#session-sidebar.hidden {
+  display: none;
+}
+
+#session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#chat-hints {
+  padding: var(--space-2) var(--space-3);
+  font-size: 13px;
+  color: #fcd34d;
+  border-bottom: 1px solid var(--border);
+}
+
+#chat-hints.hidden {
+  display: none;
+}
+
+#permission-bar {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: #1e293b;
+}
+
+#permission-bar.hidden {
+  display: none;
+}
+
+.permission-bar-inner {
+  max-width: min(720px, 100%);
+}
+
+.permission-bar-title {
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.permission-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.btn-permission-opt {
+  font-size: 13px;
+}
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+#prompt-form {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+#prompt-form .prompt-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-self: flex-end;
+}
+
+#prompt-input {
+  flex: 1;
+  min-height: 44px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.md-fallback {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+}
+
+.msg-md :is(pre, code) {
+  background: #020617;
+  border-radius: 6px;
+}
+
+.msg-md pre {
+  padding: 10px;
+  overflow-x: auto;
+}
