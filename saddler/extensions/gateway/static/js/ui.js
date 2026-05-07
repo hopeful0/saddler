@@ -109,6 +109,47 @@
     el.classList.toggle("hidden", !html);
   }
 
+  function hidePermissionBar() {
+    const bar = document.getElementById("permission-bar");
+    if (!bar) return;
+    bar.classList.add("hidden");
+    const actions = document.getElementById("permission-bar-actions");
+    if (actions) actions.replaceChildren();
+    const title = document.getElementById("permission-bar-title");
+    if (title) title.textContent = "";
+  }
+
+  function showPermissionBar(params, onPick) {
+    const bar = document.getElementById("permission-bar");
+    if (!bar) return;
+    const titleEl = document.getElementById("permission-bar-title");
+    const actions = document.getElementById("permission-bar-actions");
+    if (!titleEl || !actions) return;
+    actions.replaceChildren();
+    const tc = params && params.toolCall && typeof params.toolCall === "object"
+      ? params.toolCall
+      : {};
+    const tip =
+      (typeof tc.title === "string" && tc.title) ||
+      (tc.toolCallId != null && String(tc.toolCallId)) ||
+      "工具调用";
+    titleEl.textContent = `需要授权：${tip}`;
+    const opts = params && Array.isArray(params.options) ? params.options : [];
+    for (const opt of opts) {
+      if (!opt || typeof opt !== "object") continue;
+      const oid = opt.optionId != null ? String(opt.optionId) : "";
+      if (!oid) continue;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn btn-permission-opt";
+      b.textContent =
+        typeof opt.name === "string" && opt.name ? opt.name : oid;
+      b.addEventListener("click", () => onPick(oid));
+      actions.appendChild(b);
+    }
+    bar.classList.remove("hidden");
+  }
+
   function appendUserMessage(text) {
     const root = document.getElementById("messages");
     if (!root) return;
@@ -451,6 +492,8 @@
     setPromptSending,
     clearMessages,
     setChatHint,
+    hidePermissionBar,
+    showPermissionBar,
     appendUserMessage,
     appendUserTextChunk,
     appendAssistantTextChunk,

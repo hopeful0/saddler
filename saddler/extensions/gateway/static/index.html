@@ -35,6 +35,21 @@
       </aside>
       <section class="chat-main">
         <div id="chat-hints" class="hidden"></div>
+        <div
+          id="permission-bar"
+          class="hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="permission-bar-title"
+        >
+          <div class="permission-bar-inner">
+            <p id="permission-bar-title" class="permission-bar-title"></p>
+            <div
+              id="permission-bar-actions"
+              class="permission-bar-actions"
+            ></div>
+          </div>
+        </div>
         <div id="messages" aria-live="polite"></div>
         <form id="prompt-form">
           <textarea

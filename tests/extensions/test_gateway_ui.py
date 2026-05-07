@@ -20,6 +20,7 @@ def test_mount_gateway_ui_serves_index() -> None:
     assert "Saddler Gateway" in response.text
     assert 'id="agent-select"' in response.text
     assert 'id="prompt-cancel"' in response.text
+    assert 'id="permission-bar"' in response.text
     assert "/ui/js/app.js" in response.text
     app_js = client.get("/ui/js/app.js")
     assert app_js.status_code == 200

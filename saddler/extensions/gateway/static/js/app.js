@@ -17,8 +17,10 @@
     lastPromptUserText: null,
     sending: false,
     promptWatchdog: null,
+    permissionQueue: [],
     unsubConn: null,
     unsubUp: null,
+    unsubPerm: null,
     initializing: false,
   };
 
@@ -96,6 +98,67 @@
     if (state.promptWatchdog != null) {
       clearTimeout(state.promptWatchdog);
       state.promptWatchdog = null;
+    }
+  }
+
+  function replyPermissionCancelledAndClear() {
+    if (
+      state.client &&
+      state.client.connectionState === "connected" &&
+      state.permissionQueue.length
+    ) {
+      for (const { id } of state.permissionQueue) {
+        state.client.replyResult(id, {
+          outcome: { outcome: "cancelled" },
+        });
+      }
+    }
+    state.permissionQueue = [];
+    ui.hidePermissionBar();
+  }
+
+  function clearPermissionUiOnDisconnect() {
+    state.permissionQueue = [];
+    ui.hidePermissionBar();
+  }
+
+  function flushPermissionQueue() {
+    if (!state.permissionQueue.length) {
+      ui.hidePermissionBar();
+      return;
+    }
+    const item = state.permissionQueue[0];
+    ui.showPermissionBar(item.params, (optionId) => {
+      if (!state.client) return;
+      const head = state.permissionQueue[0];
+      if (!head || head.id !== item.id) return;
+      state.client.replyResult(head.id, {
+        outcome: { outcome: "selected", optionId },
+      });
+      state.permissionQueue.shift();
+      flushPermissionQueue();
+    });
+  }
+
+  function handlePermissionRequest(rpcId, params) {
+    if (!state.client) return;
+    const sid = params && params.sessionId;
+    if (!state.currentSessionId || sid !== state.currentSessionId) {
+      state.client.replyResult(rpcId, {
+        outcome: { outcome: "cancelled" },
+      });
+      return;
+    }
+    const opts = params && params.options;
+    if (!Array.isArray(opts) || opts.length === 0) {
+      state.client.replyResult(rpcId, {
+        outcome: { outcome: "cancelled" },
+      });
+      return;
+    }
+    state.permissionQueue.push({ id: rpcId, params });
+    if (state.permissionQueue.length === 1) {
+      flushPermissionQueue();
     }
   }
 
@@ -453,6 +516,7 @@
 
   async function selectSession(sessionId) {
     if (!sessionId || !state.agentId) return;
+    replyPermissionCancelledAndClear();
     flushStreamingToTranscript();
     state.lastPromptUserText = null;
     state.currentSessionId = sessionId;
@@ -546,6 +610,7 @@
 
   async function newSession() {
     if (!state.client || !state.agentId) return;
+    replyPermissionCancelledAndClear();
     flushStreamingToTranscript();
     const res = await state.client.sessionNew(acpSessionParams({}));
     const sid = res.sessionId || res.session_id;
@@ -580,7 +645,12 @@
       state.unsubUp();
       state.unsubUp = null;
     }
+    if (state.unsubPerm) {
+      state.unsubPerm();
+      state.unsubPerm = null;
+    }
     if (state.client) {
+      replyPermissionCancelledAndClear();
       state.client.close();
       state.client = null;
     }
@@ -609,9 +679,13 @@
 
     state.unsubConn = client.onConnection((st) => {
       ui.setConnectionStatus(st);
+      if (st === "disconnected") {
+        clearPermissionUiOnDisconnect();
+      }
       refreshInputState();
     });
     state.unsubUp = client.onSessionUpdate(handleSessionUpdate);
+    state.unsubPerm = client.onPermissionRequest(handlePermissionRequest);
 
     try {
       await client.connect();
@@ -794,6 +868,7 @@
 
   document.getElementById("prompt-cancel").addEventListener("click", () => {
     if (!state.sending || !state.client || !state.currentSessionId) return;
+    replyPermissionCancelledAndClear();
     state.client.sessionCancel({ sessionId: state.currentSessionId });
     ui.setChatHint(
       `<p>${ui.escapeHtml("已发送取消请求，等待会话结束…")}</p>`,
@@ -802,6 +877,7 @@
     state.promptWatchdog = setTimeout(() => {
       state.promptWatchdog = null;
       if (!state.sending) return;
+      replyPermissionCancelledAndClear();
       state.sending = false;
       finalizeStreamingTurns();
       refreshInputState();

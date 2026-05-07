@@ -56,6 +56,7 @@
       this._nextId = 1;
       this._pending = new Map();
       this._sessionUpdateHandlers = new Set();
+      this._permissionHandlers = new Set();
       this._connHandlers = new Set();
       this._state = "disconnected";
     }
@@ -68,6 +69,11 @@
     onSessionUpdate(fn) {
       this._sessionUpdateHandlers.add(fn);
       return () => this._sessionUpdateHandlers.delete(fn);
+    }
+
+    onPermissionRequest(fn) {
+      this._permissionHandlers.add(fn);
+      return () => this._permissionHandlers.delete(fn);
     }
 
     _emitConn() {
@@ -173,6 +179,26 @@
         }
         return;
       }
+      if (
+        typeof msg.method === "string" &&
+        msg.id !== undefined &&
+        msg.id !== null &&
+        msg.result === undefined &&
+        msg.error === undefined
+      ) {
+        if (msg.method === "session/request_permission") {
+          for (const fn of this._permissionHandlers) {
+            try {
+              fn(msg.id, msg.params || {});
+            } catch (e) {
+              console.error(e);
+            }
+          }
+        } else {
+          console.warn("acp: unhandled server request", msg.method, msg.id);
+        }
+        return;
+      }
       if (msg.method === "session/update") {
         for (const fn of this._sessionUpdateHandlers) {
           try {
@@ -215,6 +241,21 @@
           params: params === undefined ? {} : params,
         }),
       );
+    }
+
+    replyResult(id, result) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        this.ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result,
+          }),
+        );
+      } catch (e) {
+        console.error(e);
+      }
     }
 
     async initialize(clientInfo) {

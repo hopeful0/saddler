@@ -192,6 +192,37 @@ body {
   display: none;
 }
 
+#permission-bar {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: #1e293b;
+}
+
+#permission-bar.hidden {
+  display: none;
+}
+
+.permission-bar-inner {
+  max-width: min(720px, 100%);
+}
+
+.permission-bar-title {
+  margin: 0 0 var(--space-2);
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.permission-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.btn-permission-opt {
+  font-size: 13px;
+}
+
 #messages {
   flex: 1;
   overflow-y: auto;
