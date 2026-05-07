@@ -36,6 +36,9 @@ def test_ui_requires_auth() -> None:
     client = TestClient(app, raise_server_exceptions=False)
 
     assert client.get("/ui").status_code == 401
+    assert client.get("/tui/").status_code == 401
 
     response = client.get("/ui", headers={"Authorization": "Bearer secret"})
     assert response.status_code == 200
+    tui = client.get("/tui/", headers={"Authorization": "Bearer secret"})
+    assert tui.status_code == 200

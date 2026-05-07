@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Saddler Gateway · TTY</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
+    />
+    <style>
+      * {
+        box-sizing: border-box;
+        scrollbar-width: thin;
+        scrollbar-color: #3d4f72 #0f172a;
+      }
+      *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      *::-webkit-scrollbar-track {
+        background: #0f172a;
+        border-radius: 4px;
+      }
+      *::-webkit-scrollbar-thumb {
+        background: #3d4f72;
+        border-radius: 4px;
+        border: 2px solid #0f172a;
+      }
+      *::-webkit-scrollbar-thumb:hover {
+        background: #556996;
+      }
+      *::-webkit-scrollbar-corner {
+        background: #0f172a;
+      }
+      html {
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0b1020;
+        color: #e5e7eb;
+        display: flex;
+        flex-direction: column;
+      }
+      .layout {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .sidebar {
+        flex: 0 0 260px;
+        width: 260px;
+        max-width: 260px;
+        min-width: 0;
+        border-right: 1px solid #1f2937;
+        background: #111827;
+        display: flex;
+        flex-direction: column;
+        overflow-x: hidden;
+      }
+      .sidebar h1 {
+        margin: 0;
+        padding: 16px;
+        font-size: 16px;
+        font-weight: 600;
+        border-bottom: 1px solid #1f2937;
+        flex-shrink: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #agent-list {
+        list-style: none;
+        margin: 0;
+        padding: 8px;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        flex: 1;
+        min-height: 0;
+      }
+      #agent-list li {
+        padding: 10px 12px;
+        margin-bottom: 4px;
+        border-radius: 8px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        max-width: 100%;
+        overflow-x: hidden;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #agent-list li:hover {
+        background: #1f2937;
+      }
+      #agent-list li.active {
+        border-color: #3b82f6;
+        background: #1e3a5f;
+      }
+      #agent-list li.disconnected {
+        opacity: 0.6;
+      }
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+      }
+      #terminal-wrap {
+        flex: 1;
+        padding: 8px;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
+      }
+      #terminal {
+        height: 100%;
+        width: 100%;
+      }
+      #banner {
+        flex-shrink: 0;
+        padding: 8px 16px;
+        background: #111827;
+        border-bottom: 1px solid #1f2937;
+        font-size: 13px;
+        color: #9ca3af;
+        overflow-x: hidden;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #banner.error {
+        color: #fca5a5;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="banner">加载中…</div>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>Agents</h1>
+        <ul id="agent-list"></ul>
+      </aside>
+      <main class="main">
+        <div id="terminal-wrap">
+          <div id="terminal"></div>
+        </div>
+      </main>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script>
+      const banner = document.getElementById("banner");
+      const agentList = document.getElementById("agent-list");
+      const termEl = document.getElementById("terminal");
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontFamily: '"CodeNewRoman Nerd Font Mono", "Code New Roman", Consolas, "Courier New", monospace',
+        theme: { background: "#0b1020", foreground: "#e5e7eb" },
+      });
+      const fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(termEl);
+      fitAddon.fit();
+
+      let ws = null;
+      let activeAgentId = null;
+      let resizeObserver = null;
+      let dataDisposable = null;
+      let resizeDisposable = null;
+      let ttyConnectSeq = 0;
+
+      function setBanner(text, isError) {
+        banner.textContent = text;
+        banner.classList.toggle("error", !!isError);
+      }
+
+      function wsTtyUrl(agentId) {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        return `${proto}//${location.host}/agents/${agentId}/tty`;
+      }
+
+      function sendResize() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const dims = { cols: term.cols, rows: term.rows };
+        ws.send(
+          JSON.stringify({
+            type: "resize",
+            cols: dims.cols,
+            rows: dims.rows,
+          })
+        );
+      }
+
+      function disconnectOld() {
+        if (dataDisposable) {
+          dataDisposable.dispose();
+          dataDisposable = null;
+        }
+        if (resizeDisposable) {
+          resizeDisposable.dispose();
+          resizeDisposable = null;
+        }
+        if (resizeObserver) {
+          resizeObserver.disconnect();
+          resizeObserver = null;
+        }
+        if (ws) {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onclose = null;
+          ws.onerror = null;
+          try {
+            ws.close();
+          } catch (_) {}
+          ws = null;
+        }
+      }
+
+      function connectAgent(agentId) {
+        disconnectOld();
+        ttyConnectSeq += 1;
+        const seq = ttyConnectSeq;
+        term.reset();
+        activeAgentId = agentId;
+        document.querySelectorAll("#agent-list li").forEach((li) => {
+          li.classList.toggle("active", li.dataset.id === agentId);
+        });
+
+        const url = wsTtyUrl(agentId);
+        ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = () => {
+          if (seq !== ttyConnectSeq) return;
+          setBanner(`已连接：${agentId}`);
+          document
+            .querySelector(`#agent-list li[data-id="${CSS.escape(agentId)}"]`)
+            ?.classList.remove("disconnected");
+          fitAddon.fit();
+          sendResize();
+        };
+
+        ws.onmessage = (ev) => {
+          if (seq !== ttyConnectSeq) return;
+          if (ev.data instanceof ArrayBuffer) {
+            term.write(new Uint8Array(ev.data));
+          }
+        };
+
+        ws.onclose = () => {
+          if (seq !== ttyConnectSeq) return;
+          term.write(`\r\n\x1b[33m[与 ${agentId} 的 TTY 连接已断开]\x1b[0m\r\n`);
+          setBanner(`已断开：${agentId}`);
+          document
+            .querySelector(`#agent-list li[data-id="${CSS.escape(agentId)}"]`)
+            ?.classList.add("disconnected");
+        };
+
+        ws.onerror = () => {
+          if (seq !== ttyConnectSeq) return;
+          setBanner(`WebSocket 错误：${agentId}`, true);
+        };
+
+        dataDisposable = term.onData((data) => {
+          if (seq !== ttyConnectSeq) return;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(new TextEncoder().encode(data));
+          }
+        });
+
+        resizeObserver = new ResizeObserver(() => {
+          if (seq !== ttyConnectSeq) return;
+          fitAddon.fit();
+          sendResize();
+        });
+        resizeObserver.observe(document.getElementById("terminal-wrap"));
+
+        resizeDisposable = term.onResize(() => {
+          if (seq !== ttyConnectSeq) return;
+          sendResize();
+        });
+      }
+
+      async function fetchAgents() {
+        try {
+          const response = await fetch("/agents", {
+            headers: { Accept: "application/json" },
+          });
+          if (response.status === 401) {
+            setBanner("未登录：请从 /login?token=… 进入后再打开此页。", true);
+            return;
+          }
+          if (!response.ok) {
+            throw new Error("bad status");
+          }
+          const agents = await response.json();
+          agentList.innerHTML = "";
+          agents.forEach((a) => {
+            const li = document.createElement("li");
+            li.textContent = `${a.name || a.id} (${a.id})`;
+            li.dataset.id = a.id;
+            li.addEventListener("click", () => connectAgent(a.id));
+            agentList.appendChild(li);
+          });
+          setBanner(`已加载 ${agents.length} 个 agent，点击左侧连接 TTY`);
+        } catch {
+          setBanner("无法加载 /agents", true);
+        }
+      }
+
+      fetchAgents();
+    </script>
+  </body>
+</html>
