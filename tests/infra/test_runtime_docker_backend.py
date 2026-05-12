@@ -120,6 +120,193 @@ def test_start_uses_client_containers_run_when_no_container_id(
     assert backend.state.container_id == "new-cid"
 
 
+def test_start_passes_mem_limit_and_nano_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(
+            image="img",
+            mem_limit="512m",
+            nano_cpus=500_000_000,
+        ),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    call = fake_containers.run_calls[0]
+    assert call["mem_limit"] == "512m"
+    assert call["nano_cpus"] == 500_000_000
+
+
+def test_start_passes_network_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(image="img", network_mode="none"),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    assert fake_containers.run_calls[0]["network_mode"] == "none"
+
+
+def test_start_passes_privileged_and_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(
+            image="img",
+            privileged=True,
+            cap_add=["SYS_PTRACE"],
+            cap_drop=["NET_RAW"],
+        ),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    call = fake_containers.run_calls[0]
+    assert call["privileged"] is True
+    assert call["cap_add"] == ["SYS_PTRACE"]
+    assert call["cap_drop"] == ["NET_RAW"]
+
+
+def test_start_passes_device_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    dr = [{"count": -1, "capabilities": [["gpu"]]}]
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(image="img", device_requests=dr),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    assert fake_containers.run_calls[0]["device_requests"] == dr
+
+
+def test_start_passes_shm_size_and_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(
+            image="img",
+            shm_size="256m",
+            tmpfs={"/tmp": "size=128m"},
+        ),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    call = fake_containers.run_calls[0]
+    assert call["shm_size"] == "256m"
+    assert call["tmpfs"] == {"/tmp": "size=128m"}
+
+
+def test_start_passes_working_dir_and_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(
+            image="img",
+            working_dir="/app",
+            labels={"project": "saddler"},
+        ),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    call = fake_containers.run_calls[0]
+    assert call["working_dir"] == "/app"
+    assert call["labels"] == {"project": "saddler"}
+
+
+def test_start_merges_extra_into_run_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(
+            image="img",
+            extra={"dns": ["8.8.8.8"]},
+        ),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    backend.start()
+
+    assert fake_containers.run_calls[0]["dns"] == ["8.8.8.8"]
+
+
+def test_start_raises_when_extra_conflicts_with_explicit_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(
+            image="img",
+            mem_limit="1g",
+            extra={"mem_limit": "2g"},
+        ),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    with pytest.raises(ValueError, match="mem_limit"):
+        backend.start()
+
+    assert fake_containers.run_calls == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"image": "other"},
+        {"command": ["sh"]},
+        {"container_name": "n"},
+        {"name": "explicit-name"},
+        {"mem_limit": "1g"},
+        {"detach": False},
+        {"environment": {}},
+    ],
+)
+def test_start_raises_when_extra_uses_reserved_keys(
+    monkeypatch: pytest.MonkeyPatch, extra: dict[str, object]
+) -> None:
+    fake_containers = FakeContainersApi(run_container=FakeContainer())
+    fake_client = SimpleNamespace(containers=fake_containers)
+    backend = DockerRuntimeBackend(
+        spec=RuntimeSpec(backend_type="docker"),
+        docker_spec=DockerRuntimeSpec(image="img", extra=extra),
+        state=DockerRuntimeState(container_id=None),
+    )
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+
+    with pytest.raises(ValueError, match="extra keys conflict"):
+        backend.start()
+
+    assert fake_containers.run_calls == []
+
+
 def test_start_uses_client_container_start_when_has_container_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

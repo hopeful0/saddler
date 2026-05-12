@@ -37,6 +37,18 @@ class DockerRuntimeSpec(BaseModel):
     container_name: str | None = None
     command: list[str] = Field(default_factory=lambda: ["sleep", "infinity"])
     user: str | None = None
+    mem_limit: str | None = None
+    nano_cpus: int | None = None
+    network_mode: str | None = None
+    privileged: bool = False
+    cap_add: list[str] = Field(default_factory=list)
+    cap_drop: list[str] = Field(default_factory=list)
+    device_requests: list[dict[str, Any]] | None = None
+    shm_size: str | None = None
+    tmpfs: dict[str, str] | None = None
+    working_dir: str | None = None
+    labels: dict[str, str] | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_runtime_spec(cls, spec: RuntimeSpec) -> Self:
@@ -46,6 +58,52 @@ class DockerRuntimeSpec(BaseModel):
         if not isinstance(backend_spec, dict):
             raise ValueError("runtime backend_spec must be a JSON object")
         return cls.model_validate(backend_spec)
+
+
+_DOCKER_SPEC_EXTRA_FORBIDDEN_KEYS: frozenset[str] = (
+    frozenset(DockerRuntimeSpec.model_fields) - {"extra"}
+) | frozenset({"name", "detach", "environment", "volumes", "init"})
+
+
+def _collect_docker_spec_run_kwargs(
+    docker_spec: DockerRuntimeSpec, *, resolved_name: str
+) -> dict[str, Any]:
+    run_kwargs: dict[str, Any] = {"name": resolved_name}
+    if docker_spec.user is not None:
+        run_kwargs["user"] = docker_spec.user
+    if docker_spec.mem_limit is not None:
+        run_kwargs["mem_limit"] = docker_spec.mem_limit
+    if docker_spec.nano_cpus is not None:
+        run_kwargs["nano_cpus"] = docker_spec.nano_cpus
+    if docker_spec.network_mode is not None:
+        run_kwargs["network_mode"] = docker_spec.network_mode
+    if docker_spec.privileged:
+        run_kwargs["privileged"] = True
+    if docker_spec.cap_add:
+        run_kwargs["cap_add"] = list(docker_spec.cap_add)
+    if docker_spec.cap_drop:
+        run_kwargs["cap_drop"] = list(docker_spec.cap_drop)
+    if docker_spec.device_requests:
+        run_kwargs["device_requests"] = list(docker_spec.device_requests)
+    if docker_spec.shm_size is not None:
+        run_kwargs["shm_size"] = docker_spec.shm_size
+    if docker_spec.tmpfs is not None:
+        run_kwargs["tmpfs"] = dict(docker_spec.tmpfs)
+    if docker_spec.working_dir is not None:
+        run_kwargs["working_dir"] = docker_spec.working_dir
+    if docker_spec.labels is not None:
+        run_kwargs["labels"] = dict(docker_spec.labels)
+
+    extra = docker_spec.extra
+    conflicts = set(extra) & _DOCKER_SPEC_EXTRA_FORBIDDEN_KEYS
+    if conflicts:
+        keys = ", ".join(sorted(conflicts))
+        raise ValueError(
+            f"extra keys conflict with explicit docker runtime fields: {keys}"
+        )
+
+    run_kwargs.update(extra)
+    return run_kwargs
 
 
 class DockerRuntimeState(BaseModel):
@@ -950,15 +1008,17 @@ class DockerRuntimeBackend:
                 "bind": bind_mount.destination,
                 "mode": bind_mount.mode.value,
             }
+        spec_run_kwargs = _collect_docker_spec_run_kwargs(
+            self.docker_spec, resolved_name=container_name
+        )
         container = client.containers.run(
             self.docker_spec.image,
             self.docker_spec.command,
             detach=True,
-            name=container_name,
-            user=self.docker_spec.user,
             environment=environment,
             volumes=mounts,
             init=True,
+            **spec_run_kwargs,
         )
 
         self.state = DockerRuntimeState(
