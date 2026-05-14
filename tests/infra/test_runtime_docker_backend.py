@@ -128,7 +128,7 @@ def test_start_passes_mem_limit_and_nano_cpus(monkeypatch: pytest.MonkeyPatch) -
         docker_spec=DockerRuntimeSpec(
             image="img",
             mem_limit="512m",
-            nano_cpus=500_000_000,
+            nano_cpus=1_500_000_000.0,
         ),
         state=DockerRuntimeState(container_id=None),
     )
@@ -138,7 +138,7 @@ def test_start_passes_mem_limit_and_nano_cpus(monkeypatch: pytest.MonkeyPatch) -
 
     call = fake_containers.run_calls[0]
     assert call["mem_limit"] == "512m"
-    assert call["nano_cpus"] == 500_000_000
+    assert call["nano_cpus"] == 1_500_000_000.0
 
 
 def test_start_passes_network_mode(monkeypatch: pytest.MonkeyPatch) -> None:

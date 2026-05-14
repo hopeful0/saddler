@@ -38,7 +38,7 @@ class DockerRuntimeSpec(BaseModel):
     command: list[str] = Field(default_factory=lambda: ["sleep", "infinity"])
     user: str | None = None
     mem_limit: str | None = None
-    nano_cpus: int | None = None
+    nano_cpus: float | None = None
     network_mode: str | None = None
     privileged: bool = False
     cap_add: list[str] = Field(default_factory=list)
